@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+
+bwfzf-osx-keychain() {
+  if hash security 2>/dev/null; then
+    local sessionKey="${BW_SESSION}"
+
+    # set BW_SESSION env var from keychain if necessary
+    if [[ -z "${sessionKey}" ]]; then
+      sessionKey="$(security find-generic-password -a "${USER}" -s bw -w 2> /dev/null)"
+      export BW_SESSION="${sessionKey}"
+    fi
+
+    if hash bwfzf-autolock 2>/dev/null; then
+      bwfzf-autolock
+    else
+      bwfzf
+    fi
+
+    # if $BW_SESSION has changed, update session key stored via keychain
+    if [[ "${sessionKey}" != "${BW_SESSION}" ]]; then
+      # -U : update if already exists
+      # -T : revoke access for all applications (set blank "")
+      security add-generic-password -a "${USER}" -s bw -w "${BW_SESSION}" -T "" -U
+    fi
+  else
+    echo "Error: You're trying to use bwfzf-osx-keychain but the keychain cli command `security` does not exist. Are you sure this is OSX?"
+  fi
+}

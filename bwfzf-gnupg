@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+
+bwfzf-gnupg() {
+  if hash gpg 2>/dev/null; then
+    local sessionKey="${BW_SESSION}"
+    local sessionFile="${TMPDIR:-~/}BW_SESSION"
+
+    # set BW_SESSION env var from gpg if necessary
+    if [[ -z "${sessionKey}" ]]; then
+      sessionKey="$(gpg --decrypt --batch "${sessionFile}" 2> /dev/null)"
+      export BW_SESSION="${sessionKey}"
+    fi
+
+    if hash bwfzf-autolock 2>/dev/null; then
+      bwfzf-autolock
+    else
+      bwfzf
+    fi
+
+    # if $BW_SESSION has changed, update session key stored via gpg
+    if [[ "${sessionKey}" != "${BW_SESSION}" ]]; then
+      # use "Here Documents" feature to pipe session data securely from $BW_SESSION to gpg
+      # this avoids leaking variable contents to pipe or process snooping
+      # <<EOF used instead of <<< for portability, per https://stackoverflow.com/a/21171367/11776945
+      # --passphrase-repeat 0 : force pinentry to only prompt for passphrase once
+      gpg --symmetric --batch --yes --passphrase-repeat 0 --output "${sessionFile}" <<EOF
+$BW_SESSION
+EOF
+    fi
+  else
+    echo "Error: You're trying to use bwfzf-gnupg but `gpg` is not installed. Try `brew install gnupg` or consult the GnuPG docs for installation instructions on your platform: https://www.gnupg.org/documentation"
+  fi
+}

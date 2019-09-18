@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+
+# lock bitwarden after N minutes - revoke all existing sessions
+if [[ "${BW_SESSION_SET_EXPIRY_ON_SHELL_START:-}" != false ]]; then
+  ( sleep $(( ${BW_SESSION_EXPIRE_AFTER_MIN:-30} * 60 )) ; bw lock &>/dev/null ) & disown
+fi
+
+bwfzf-autolock() {
+  # lock bitwarden after N minutes - revoke all existing sessions
+  if [[ "${BW_SESSION_SET_EXPIRY_ON_VAULT_ACCESS:-}" != false ]]; then
+    local expireAfterMinutes="${BW_SESSION_EXPIRE_AFTER_MIN:-30}"
+    local currentTime=$(date +%s)
+
+    if [[ -z "${BW_SESSION_EXPIRY_TIME}" ]]; then
+      export BW_SESSION_EXPIRY_TIME=$(( currentTime + ( expireAfterMinutes * 60 ) ))
+    elif (( currentTime > BW_SESSION_EXPIRY_TIME )); then
+      bw lock
+      unset BW_SESSION_EXPIRY_TIME
+    fi
+  fi
+
+  bwfzf
+}

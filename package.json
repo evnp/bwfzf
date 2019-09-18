@@ -1,0 +1,9 @@
+{
+  "name": "bwfzf",
+  "version": "0.0.1",
+  "description": "",
+  "main": "bwfzf.sh",
+  "scripts": {},
+  "author": "Evan Purcer <evanpurcer@gmail.com> (http://evnp.ca)",
+  "license": "MIT"
+}

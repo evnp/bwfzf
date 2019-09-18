@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+
+alias bf="bwfzf"
+alias bfg="bwfzf-gnupg"
+alias bfk="bwfzf-osx-keychain"
+alias bfgen="bw generate | secure-pbcopy"
+alias bfl="bw lock"
