@@ -36,6 +36,7 @@ bwfzf-gnupg() {
       # --yes                    : (over)write output file even if it already exists
       # --passphrase-repeat 0    : force pinentry to only prompt for passphrase once
       # --pinentry-mode loopback : attempt to make pinentry prompt directly in terminal; requires allow-loopback-pinentry in ~/.gnupg/gpg-agent.conf
+      echo "Enter a PIN or passphrase to secure your encrypted Bitwarden session on disk:"
       gpg --symmetric --yes --passphrase-repeat 0 --pinentry-mode loopback --output "${sessionFile}" <<EOF
 $BW_SESSION
 EOF
