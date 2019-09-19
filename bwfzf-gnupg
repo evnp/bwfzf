@@ -2,20 +2,21 @@
 
 bwfzf-gnupg() {
   if hash gpg 2>/dev/null; then
-    local originalPinentryUserData="${PINENTRY_USER_DATA}"
+
+    # prevent "gpg: problem with the agent: Inappropriate ioctl for device" errors; restore at end of function
     local originalGpgTty="${GPG_TTY}"
+    export GPG_TTY=$(tty)
 
     # make pinentry prompt for password within terminal instead of external GUI popup; restore at end of function
+    local originalPinentryUserData="${PINENTRY_USER_DATA}"
     export PINENTRY_USER_DATA="USE_CURSES=1"
-    # prevent "gpg: problem with the agent: Inappropriate ioctl for device" errors; restore at end of function
-    export GPG_TTY=$(tty)
 
     local sessionKey="${BW_SESSION}"
     local sessionFile="${TMPDIR:-~/}BW_SESSION"
 
     # set BW_SESSION env var from gpg if necessary
     if [[ -z "${sessionKey}" ]]; then
-      sessionKey="$(gpg --decrypt "${sessionFile}" 2> /dev/null)"
+      sessionKey="$(gpg --decrypt --pinentry-mode loopback "${sessionFile}" 2> /dev/null)"
       export BW_SESSION="${sessionKey}"
     fi
 
@@ -31,14 +32,16 @@ bwfzf-gnupg() {
       # use "Here Documents" shell feature to pipe session data securely from $BW_SESSION to gpg
       # this avoids leaking variable contents to pipe or process snooping
       # <<EOF used instead of <<< for portability, per https://stackoverflow.com/a/21171367/11776945
-      # --symmetric           : passphrase-only encryption, no public/private keypair
-      # --yes                 : (over)write output file even if it already exists
-      # --passphrase-repeat 0 : force pinentry to only prompt for passphrase once
-      gpg --symmetric --yes --passphrase-repeat 0 --output "${sessionFile}" <<EOF
+      # --symmetric              : passphrase-only encryption, no public/private keypair
+      # --yes                    : (over)write output file even if it already exists
+      # --passphrase-repeat 0    : force pinentry to only prompt for passphrase once
+      # --pinentry-mode loopback : attempt to make pinentry prompt directly in terminal; requires allow-loopback-pinentry in ~/.gnupg/gpg-agent.conf
+      gpg --symmetric --yes --passphrase-repeat 0 --pinentry-mode loopback --output "${sessionFile}" <<EOF
 $BW_SESSION
 EOF
     fi
 
+    # restore gpg/pinentry env vars
     export PINENTRY_USER_DATA="${originalPinentryUserData}"
     export GPG_TTY="${originalGpgTty}"
   else
