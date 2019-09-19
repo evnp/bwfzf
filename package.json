@@ -1,7 +1,7 @@
 {
   "name": "bwfzf",
   "version": "0.0.1",
-  "description": "",
+  "description": "Bitwarden + FZF = ❤️",
   "main": "bwfzf.sh",
   "scripts": {},
   "author": "Evan Purcer <evanpurcer@gmail.com> (http://evnp.ca)",
