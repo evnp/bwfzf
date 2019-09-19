@@ -31,6 +31,8 @@ bwfzf() {
     )"
   )"
 
+  echo
+
   # perform an action (e.g. copy password to clipboard) then ask the user
   # whether to perform another action or exit
   while true; do
@@ -39,6 +41,11 @@ bwfzf() {
     if [[ "${keyPressed}" == "p" ]]; then
       lastAction=""
       echo "${bwItem//$(echo "${bwItem}" | jq -r '.login.password')/*****}" | jq .
+
+    # l key - lock vault & exit
+    elif [[ "${keyPressed}" == "l" ]]; then
+      bw lock
+      break
 
     # enter key - copy password, username, uri, etc.
     elif [[ -z "${keyPressed}" ]]; then
@@ -61,11 +68,12 @@ bwfzf() {
       break
     fi
 
-    read -rsn1 -p "
-${lastAction}
+    read -rsn1 -p "${lastAction}
   enter -> copy ${nextField}
   p key -> print full entry (password redacted)
+  l key -> lock vault & exit
   other -> exit
+
 " keyPressed
   done
 }
