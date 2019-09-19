@@ -37,8 +37,13 @@ bwfzf() {
   # whether to perform another action or exit
   while true; do
 
+    # o key - open uri in browser
+    if [[ "${keyPressed}" == "o" ]]; then
+      lastAction="URI opened!"
+      open -n "$(echo "${bwItem}" | jq -r '.login.uris[0].uri')"
+
     # p key - print full entry
-    if [[ "${keyPressed}" == "p" ]]; then
+    elif [[ "${keyPressed}" == "p" ]]; then
       lastAction=""
       echo "${bwItem//$(echo "${bwItem}" | jq -r '.login.password')/*****}" | jq .
 
@@ -52,10 +57,6 @@ bwfzf() {
       if [[ "${nextField}" == "username" ]]; then
         echo "${bwItem}" | jq -r '.login.username' | secure-pbcopy
         lastAction="Username copied!"
-        nextField="uri"
-      elif [[ "${nextField}" == "uri" ]]; then
-        echo "${bwItem}" | jq -r '.login.uri' | secure-pbcopy
-        lastAction="URI copied!"
         nextField="password"
       else
         echo "${bwItem}" | jq -r '.login.password' | secure-pbcopy
@@ -70,6 +71,7 @@ bwfzf() {
 
     read -rsn1 -p "${lastAction}
   enter -> copy ${nextField}
+  o key -> open uri in browser
   p key -> print full entry (password redacted)
   l key -> lock vault & exit
   other -> exit
