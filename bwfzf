@@ -1,81 +1,126 @@
 #!/usr/bin/env bash
 
 bwfzf() {
+  local bwItem
+  local bwItemId
   local bwItems
   local keyPressed
   local lastAction
-  local loginOrUnlock
   local nextField
+  local sessionKey
 
-  # attempt to fetch items list
-  bwItems="$(bw list items)"
-  if [[ "${bwItems}" == *"not logged in"* ]]; then
-    loginOrUnlock="login"
-  elif [[ "${bwItems}" == *"locked"* ]]; then
-    loginOrUnlock="unlock"
-  fi
-
-  # if login or unlock required, update session env var then re-fetch
-  if [[ -n "${loginOrUnlock}" ]]; then
-    export BW_SESSION="$(bw "${loginOrUnlock}" --raw)"
-    bwItems="$(bw list items)"
-  fi
-
-  # invoke fzf on items list
-  bwItem="$(
-    bw get item "$(
-      echo "${bwItems}" \
-      | jq -r '.[] | "\(.name) · \(.login.username) \(.id)" ' \
-      | fzf-tmux --nth 1..-2 --with-nth 1..-2 \
-      | awk '{print $NF}' \
-    )"
+  # use "Here Documents" piping to send "bw list items" result (which contains passwords)
+  # securly to jq which will sanitize it into a list of "name username id" rows (no passwords)
+  # this avoids leaking sensitive variable contents to pipe or process snooping
+  # <<EOF used instead of <<< for portability, per https://stackoverflow.com/a/21171367/11776945
+  bwItems="$(jq -r '.[] | "\(.name) · \(.login.username) \(.id)"' 2> /dev/null <<EOF
+    $(bw list items)
+EOF
   )"
 
-  echo
+  # if login or unlock required, update session env var then retry
+  if [[ -z "${bwItems}" ]]; then
+    sessionKey="$(bw unlock --raw)"
 
-  # perform an action (e.g. copy password to clipboard) then ask the user
-  # whether to perform another action or exit
-  while true; do
-
-    # o key - open uri in browser
-    if [[ "${keyPressed}" == "o" ]]; then
-      lastAction="URI opened!"
-      open -n "$(echo "${bwItem}" | jq -r '.login.uris[0].uri')"
-
-    # p key - print full entry
-    elif [[ "${keyPressed}" == "p" ]]; then
-      lastAction=""
-      echo "${bwItem//$(echo "${bwItem}" | jq -r '.login.password')/*****}" | jq .
-
-    # l key - lock vault & exit
-    elif [[ "${keyPressed}" == "l" ]]; then
-      bw lock
-      break
-
-    # enter key - copy password, username, uri, etc.
-    elif [[ -z "${keyPressed}" ]]; then
-      if [[ "${nextField}" == "username" ]]; then
-        echo "${bwItem}" | jq -r '.login.username' | secure-pbcopy
-        lastAction="Username copied!"
-        nextField="password"
-      else
-        echo "${bwItem}" | jq -r '.login.password' | secure-pbcopy
-        lastAction="Password copied!"
-        nextField="username"
-      fi
-
-    # any other key - exit
-    else
-      break
+    if [[ "${sessionKey}" == *"not logged in"* ]]; then
+      sessionKey="$(bw login --raw)"
     fi
 
-    read -rsn1 -p "${lastAction}
+    export BW_SESSION="${sessionKey}"
+
+    bwfzf
+
+  else
+    # invoke fzf on items list
+    # use "Here Documents" piping for security, see above
+    bwItem="$(fzf-tmux --nth 1..-2 --with-nth 1..-2 <<EOF
+${bwItems}
+EOF
+)"
+    # get last field (id) from "name username id" row
+    # use "Here Documents" piping for security, see above
+    bwItemId="$(awk '{print $NF}' <<EOF
+${bwItem}
+EOF
+)"
+
+    echo  # formatting
+
+    # perform an action (e.g. copy password to clipboard) then ask the user
+    # whether to perform another action or exit
+    while true; do
+
+      # 1-9 key - copy username or password in N seconds
+      if [[ "${keyPressed}" =~ ^[0-9]+$ ]]; then
+        lastAction="Copying ${nextField} in ${keyPressed} seconds..."
+
+        if [[ "${nextField}" == "username" ]]; then
+          # use "Here Documents" piping for security, see above
+          ( sleep "${keyPressed}" ; $(secure-pbcopy <<EOF
+$(bw get username "${bwItemId}")
+EOF
+) ; echo "Username copied!" ) & disown
+          nextField="password"
+        else
+          # use "Here Documents" piping for security, see above
+          ( sleep "${keyPressed}" ; $(secure-pbcopy <<EOF
+$(bw get password "${bwItemId}")
+EOF
+) ; echo "Password copied!" ) & disown
+          nextField="username"
+        fi
+
+      # o key - open uri in browser
+      elif [[ "${keyPressed}" == "o" ]]; then
+        lastAction="URI opened!"
+        open -n "$(bw get uri "${bwItemId}")"
+
+      # p key - print full entry
+      elif [[ "${keyPressed}" == "p" ]]; then
+        # use "Here Documents" piping for security, see above
+        echo "$(jq 'del(.login.password)' <<EOF
+$(bw get item "${bwItemId}")
+EOF
+)" | jq .
+        echo
+
+      # l key - lock vault & exit
+      elif [[ "${keyPressed}" == "l" ]]; then
+        bw lock
+        break
+
+      # enter key - copy password, username, uri, etc.
+      elif [[ -z "${keyPressed}" ]]; then
+        if [[ "${nextField}" == "username" ]]; then
+          # use "Here Documents" piping for security, see above
+          secure-pbcopy <<EOF
+$(bw get username "${bwItemId}")
+EOF
+          lastAction="Username copied!"
+          nextField="password"
+        else
+          # use "Here Documents" piping for security, see above
+          secure-pbcopy <<EOF
+$(bw get password "${bwItemId}")
+EOF
+          lastAction="Password copied!"
+          nextField="username"
+        fi
+
+      # any other key - exit
+      else
+        break
+      fi
+
+      read -rsn1 -p "${lastAction}
   enter -> copy ${nextField}
-  o key -> open uri in browser
+  0-9   -> copy ${nextField} in N seconds
+  o key -> open in browser
   p key -> print full entry (password redacted)
   l key -> lock vault & exit
   other -> exit
 
-" keyPressed
-  done
+"   keyPressed
+    done
+  fi
 }

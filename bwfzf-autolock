@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 
+# TODO: reference BW_SESSION_EXPIRY temp file here to _actually_ lock every N minutes
 # lock bitwarden after N minutes - revoke all existing sessions
 if [[ "${BW_SESSION_SET_EXPIRY_ON_SHELL_START:-}" != false ]]; then
   ( sleep $(( ${BW_SESSION_EXPIRE_AFTER_MIN:-30} * 60 )) ; bw lock &>/dev/null ) & disown

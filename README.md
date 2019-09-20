@@ -5,5 +5,4 @@ TODO:
 - fix case where wrong master password is entered
 - tests
 - shellcheck
-- security audit
 - install script
