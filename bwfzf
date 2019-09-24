@@ -9,6 +9,8 @@ bwfzf() {
   local nextField
   local sessionKey
 
+  clear
+
   # use "Here Documents" piping to send "bw list items" result (which contains passwords)
   # securly to jq which will sanitize it into a list of "name username id" rows (no passwords)
   # this avoids leaking sensitive variable contents to pipe or process snooping
