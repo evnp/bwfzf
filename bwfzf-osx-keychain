@@ -20,7 +20,10 @@ bwfzf-osx-keychain() {
     if [[ "${sessionKey}" != "${BW_SESSION}" ]]; then
       # -U : update if already exists
       # -T : revoke access for all applications (set blank "")
-      security add-generic-password -a "${USER}" -s bw -w "${BW_SESSION}" -T "" -U
+      # EOF: supply BW_SESSION data over stdin so it's not exposed in process list
+      security -i <<EOF
+add-generic-password -a "${USER}" -s bw -U -T "" -w "${BW_SESSION}"
+EOF
     fi
   else
     echo "Error: You're trying to use bwfzf-osx-keychain but the keychain cli command `security` does not exist. Are you sure this is OSX?"
