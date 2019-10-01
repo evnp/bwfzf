@@ -12,8 +12,10 @@ bwfzf-osx-keychain() {
 
     if hash bwfzf-autolock 2>/dev/null; then
       bwfzf-autolock
-    else
+    elif hash bwfzf 2>/dev/null; then
       bwfzf
+    else
+      echo "Error: You're trying to use `bwfzf-gnupg` but the command `bwfzf` is not available. Add `source /path/to/bwfzf` to your .bashrc and try again."
     fi
 
     # if $BW_SESSION has changed, update session key stored via keychain
@@ -26,6 +28,6 @@ add-generic-password -a "${USER}" -s bw -U -T "" -w "${BW_SESSION}"
 EOF
     fi
   else
-    echo "Error: You're trying to use bwfzf-osx-keychain but the keychain cli command `security` does not exist. Are you sure this is OSX?"
+    echo "Error: You're trying to use `bwfzf-osx-keychain` but the keychain cli command `security` does not exist. Are you sure this is OSX?"
   fi
 }

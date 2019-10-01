@@ -18,8 +18,10 @@ bwfzf-gnupg() {
 
     if hash bwfzf-autolock 2>/dev/null; then
       bwfzf-autolock
-    else
+    elif hash bwfzf 2>/dev/null; then
       bwfzf
+    else
+      echo "Error: You're trying to use `bwfzf-gnupg` but the command `bwfzf` is not available. Add `source /path/to/bwfzf` to your .bashrc and try again."
     fi
 
     # if $BW_SESSION has changed, update session key stored via gpg
@@ -69,6 +71,6 @@ EOF
     # restore gpg/pinentry env vars
     export GPG_TTY="${originalGpgTty}"
   else
-    echo "Error: You're trying to use bwfzf-gnupg but `gpg` is not installed. Try `brew install gnupg` or consult the GnuPG docs for installation instructions on your platform: https://www.gnupg.org/documentation"
+    echo "Error: You're trying to use `bwfzf-gnupg` but `gpg` is not installed. Try `brew install gnupg` or consult the GnuPG docs for installation instructions on your platform: https://www.gnupg.org/documentation"
   fi
 }
