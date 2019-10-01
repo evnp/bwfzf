@@ -3,20 +3,16 @@
 bwfzf-gnupg() {
   if hash gpg 2>/dev/null; then
 
-    # prevent "gpg: problem with the agent: Inappropriate ioctl for device" errors; restore at end of function
+    # ensure no user-set GPG_TTY interferes with gpg/pinentry interaction below; restore at end of function
     local originalGpgTty="${GPG_TTY}"
-    export GPG_TTY=$(tty)
-
-    # make pinentry prompt for password within terminal instead of external GUI popup; restore at end of function
-    local originalPinentryUserData="${PINENTRY_USER_DATA}"
-    export PINENTRY_USER_DATA="USE_CURSES=1"
+    export GPG_TTY=""
 
     local sessionKey="${BW_SESSION}"
     local sessionFile="${TMPDIR:-~/}BW_SESSION"
 
     # set BW_SESSION env var from gpg if necessary
     if [[ -z "${sessionKey}" ]]; then
-      sessionKey="$(gpg --decrypt --pinentry-mode loopback "${sessionFile}" 2> /dev/null)"
+      sessionKey="$(gpg --decrypt "${sessionFile}" 2>/dev/null)"
       export BW_SESSION="${sessionKey}"
     fi
 
@@ -26,24 +22,51 @@ bwfzf-gnupg() {
       bwfzf
     fi
 
-
     # if $BW_SESSION has changed, update session key stored via gpg
     if [[ "${sessionKey}" != "${BW_SESSION}" ]]; then
+      # generate passphrase for gpg symmetric encryption
+      # https://security.stackexchange.com/questions/113309/is-a-43-character-gpg-symmetric-passphrase-as-secure-as-a-256-bit-key
+      local passphrase="$(bw generate --length 50)"
+
+      # create new session file, double-checking its only readable by current user: 600 = "-rw-------"
+      # sessionFile="$(mktemp)"
+      touch "${sessionFile}"
+      chmod 600 "${sessionFile}"
+
       # use "Here Documents" shell feature to pipe session data securely from $BW_SESSION to gpg
       # this avoids leaking variable contents to pipe or process snooping
       # <<EOF used instead of <<< for portability, per https://stackoverflow.com/a/21171367/11776945
-      # --symmetric              : passphrase-only encryption, no public/private keypair
-      # --yes                    : (over)write output file even if it already exists
-      # --passphrase-repeat 0    : force pinentry to only prompt for passphrase once
-      # --pinentry-mode loopback : attempt to make pinentry prompt directly in terminal; requires allow-loopback-pinentry in ~/.gnupg/gpg-agent.conf
-      echo "Enter a PIN or passphrase to secure your encrypted Bitwarden session on disk:"
-      gpg --symmetric --yes --passphrase-repeat 0 --pinentry-mode loopback --output "${sessionFile}" <<EOF
-$BW_SESSION
+      # --symmetric       : passphrase-only encryption, no public/private keypair
+      # --yes             : (over)write output file even if it already exists
+      # --passphrase-fd 3 : pass in passphrase over file descriptor 3 to avoid echoing it into stdin (leaking to process list)
+      # --batch           : necessary for --passphrase-fd
+      # --output -        : force gpg to send output over stdout (piped to perm-secured file)
+      (
+        gpg --symmetric --yes --passphrase-fd 3 --batch --output - <<EOF2 3<<EOF3
+${BW_SESSION}
+EOF2
+${passphrase}
+EOF3
+      ) > "${sessionFile}"
+
+      # get the 8-octet hex-encoded salt value used during encryption:
+      local salt="$(echo | gpg --list-packets "${sessionFile}" 2>&1 | grep -o '[0-9A-F]\{16\}')"
+
+      # hex-encode the passphrase for use with gpg-connect-agent preset_passphrase
+      # tr -d '\n' - need to remove trailing newline from EOF input
+      local hexpassphrase="$((tr -d '\n' | hexdump -v -e '/1 "%02X"') <<EOF
+${passphrase}
+EOF
+      )"
+
+      # preset the passphrase in gpg-agent
+      # "S" prefix necessary for salt-based cacheid: https://superuser.com/a/1485486/1093343
+      gpg-connect-agent 1>/dev/null <<EOF
+preset_passphrase S${salt} -1 ${hexpassphrase}
 EOF
     fi
 
     # restore gpg/pinentry env vars
-    export PINENTRY_USER_DATA="${originalPinentryUserData}"
     export GPG_TTY="${originalGpgTty}"
   else
     echo "Error: You're trying to use bwfzf-gnupg but `gpg` is not installed. Try `brew install gnupg` or consult the GnuPG docs for installation instructions on your platform: https://www.gnupg.org/documentation"
