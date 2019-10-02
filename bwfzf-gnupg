@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 
+# TODO: add verbose mode which causes gpg commands to provide verbose output
+# TODO: store half of session in randomly-named temp file (created via mktemp)
+
 bwfzf-gnupg() {
   if hash gpg 2>/dev/null; then
 
@@ -8,12 +11,32 @@ bwfzf-gnupg() {
     export GPG_TTY=""
 
     local sessionKey="${BW_SESSION}"
-    local sessionFile="${TMPDIR:-~/}BW_SESSION"
+    local encryptedSessionKey  # encrypted bitwarden session key data
+    local encodedSessionKey    # encrypted and hex-encoded session key data
+
+    local salt
+    local pass
+    local hexPass
 
     # set BW_SESSION env var from gpg if necessary
     if [[ -z "${sessionKey}" ]]; then
-      sessionKey="$(gpg --decrypt "${sessionFile}" 2>/dev/null)"
+      encryptedSessionKey="$(
+        gpg-connect-agent 'getval bwfzf' /bye | sed 's/[^a-z0-9]//g' | xxd -plain -revert -cols 9999
+      )"
+      sessionKey="$(
+        gpg --decrypt -vv <<EOF
+${encryptedSessionKey}
+EOF
+      )"
       export BW_SESSION="${sessionKey}"
+
+      echo '----start-debug----'
+      echo
+      echo $encryptedSessionKey
+      echo
+      echo $sessionKey
+      echo
+      echo '-----end-debug-----'
     fi
 
     if hash bwfzf-autolock 2>/dev/null; then
@@ -26,46 +49,71 @@ bwfzf-gnupg() {
 
     # if $BW_SESSION has changed, update session key stored via gpg
     if [[ "${sessionKey}" != "${BW_SESSION}" ]]; then
+      sessionKey="${BW_SESSION}"
+
       # generate passphrase for gpg symmetric encryption
       # https://security.stackexchange.com/questions/113309/is-a-43-character-gpg-symmetric-passphrase-as-secure-as-a-256-bit-key
-      local passphrase="$(bw generate --length 50)"
-
-      # create new session file, double-checking its only readable by current user: 600 = "-rw-------"
-      # sessionFile="$(mktemp)"
-      touch "${sessionFile}"
-      chmod 600 "${sessionFile}"
+      local pass="$(bw generate --length 50)"
 
       # use "Here Documents" shell feature to pipe session data securely from $BW_SESSION to gpg
       # this avoids leaking variable contents to pipe or process snooping
       # <<EOF used instead of <<< for portability, per https://stackoverflow.com/a/21171367/11776945
       # --symmetric       : passphrase-only encryption, no public/private keypair
       # --yes             : (over)write output file even if it already exists
-      # --passphrase-fd 3 : pass in passphrase over file descriptor 3 to avoid echoing it into stdin (leaking to process list)
+      # --passphrase-fd 3 : send passphrase over file descriptor 3 to avoid echoing it into stdin (leaking to process list)
       # --batch           : necessary for --passphrase-fd
       # --output -        : force gpg to send output over stdout (piped to perm-secured file)
-      (
-        gpg --symmetric --yes --passphrase-fd 3 --batch --output - <<EOF2 3<<EOF3
-${BW_SESSION}
+      encryptedSessionKey=$(
+        gpg --symmetric --compress-level 0 --yes --passphrase-fd 3 --batch --output - <<EOF2 3<<EOF3
+${sessionKey}
 EOF2
-${passphrase}
+${pass}
 EOF3
-      ) > "${sessionFile}"
+      )
 
       # get the 8-octet hex-encoded salt value used during encryption:
-      local salt="$(echo | gpg --list-packets "${sessionFile}" 2>&1 | grep -o '[0-9A-F]\{16\}')"
+      salt="$((
+        echo | gpg --list-packets <<EOF
+${encryptedSessionKey}
+EOF
+      ) | grep -o '[0-9A-F]\{16\}')"
+
+      encodedSessionKey="$(
+        xxd -plain -cols 9999 <<EOF
+${encryptedSessionKey}
+EOF
+      )"
+
+      # store the encrypted session key in gpg-agent
+      gpg-connect-agent 1>/dev/null <<EOF
+putval bwfzf ${encodedSessionKey}
+EOF
 
       # hex-encode the passphrase for use with gpg-connect-agent preset_passphrase
       # tr -d '\n' - need to remove trailing newline from EOF input
-      local hexpassphrase="$((tr -d '\n' | hexdump -v -e '/1 "%02X"') <<EOF
-${passphrase}
+      hexPass="$(
+        (tr -d '\n' | hexdump -v -e '/1 "%02X"') <<EOF
+${pass}
 EOF
       )"
 
       # preset the passphrase in gpg-agent
       # "S" prefix necessary for salt-based cacheid: https://superuser.com/a/1485486/1093343
       gpg-connect-agent 1>/dev/null <<EOF
-preset_passphrase S${salt} -1 ${hexpassphrase}
+preset_passphrase S${salt} -1 ${hexPass}
 EOF
+
+      echo '----start-debug----'
+      echo
+      echo $sessionKey
+      echo
+      echo $encryptedSessionKey
+      echo
+      echo $encodedSessionKey
+      echo
+      echo $salt
+      echo
+      echo '-----end-debug-----'
     fi
 
     # restore gpg/pinentry env vars
