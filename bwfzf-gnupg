@@ -4,6 +4,11 @@
 # TODO: store half of session in randomly-named temp file (created via mktemp)
 
 bwfzf-gnupg() {
+  # parse args
+  local argVerbose=false
+  local argDebug=false
+  bwfzf-argparse "$@"
+
   if hash gpg 2>/dev/null; then
 
     # ensure no user-set GPG_TTY interferes with gpg/pinentry interaction below; restore at end of function
@@ -13,47 +18,59 @@ bwfzf-gnupg() {
     local sessionKey="${BW_SESSION}"
     local encryptedSessionKey  # encrypted bitwarden session key data
     local encodedSessionKey    # encrypted and hex-encoded session key data
+    local retrievedSessionKey
+    local decodedSessionKey
+    local decryptedSessionKey
 
+    local outputMode
     local salt
     local pass
     local hexPass
 
     # set BW_SESSION env var from gpg if necessary
     if [[ -z "${sessionKey}" ]]; then
-      encryptedSessionKey="$(
-        gpg-connect-agent 'getval bwfzf' /bye | sed 's/[^a-z0-9]//g' | xxd -plain -revert -cols 9999
-      )"
-      sessionKey="$(
-        gpg --decrypt -vv <<EOF
-${encryptedSessionKey}
+      retrievedSessionKey=$(gpg-connect-agent 'getval bwfzf' /bye | sed 's/[^a-z0-9]//g')
+      decodedSessionKey=$(
+        xxd -plain -revert -cols 9999 <<EOF
+${retrievedSessionKey}
 EOF
-      )"
-      export BW_SESSION="${sessionKey}"
+      )
+      [[ ${argVerbose} == true ]] && outputMode="-vv" || outputMode="2>/dev/null"
+      decryptedSessionKey=$(
+        gpg --decrypt --armor ${outputMode} <<EOF
+${decodedSessionKey}
+EOF
+      )
+      export BW_SESSION=${decryptedSessionKey}
 
-      echo '----start-debug----'
-      echo
-      echo $encryptedSessionKey
-      echo
-      echo $sessionKey
-      echo
-      echo '-----end-debug-----'
+      if [[ ${argDebug} == true ]]; then
+        echo '┌───retrieved-session-key───┐'
+        echo ${retrievedSessionKey}
+        echo '└───────────────────────────┘'
+        echo '┌────decoded-session-key────┐'
+        echo ${decodedSessionKey}
+        echo '└───────────────────────────┘'
+        echo '┌───decrypted-session-key───┐'
+        echo ${decryptedSessionKey}
+        echo '└───────────────────────────┘'
+      fi
     fi
 
     if hash bwfzf-autolock 2>/dev/null; then
-      bwfzf-autolock
+      bwfzf-autolock "$@"
     elif hash bwfzf 2>/dev/null; then
-      bwfzf
+      bwfzf "$@"
     else
       echo "Error: You're trying to use `bwfzf-gnupg` but the command `bwfzf` is not available. Add `source /path/to/bwfzf` to your .bashrc and try again."
     fi
 
     # if $BW_SESSION has changed, update session key stored via gpg
-    if [[ "${sessionKey}" != "${BW_SESSION}" ]]; then
-      sessionKey="${BW_SESSION}"
+    if [[ ${sessionKey} != ${BW_SESSION} ]]; then
+      sessionKey=${BW_SESSION}
 
       # generate passphrase for gpg symmetric encryption
       # https://security.stackexchange.com/questions/113309/is-a-43-character-gpg-symmetric-passphrase-as-secure-as-a-256-bit-key
-      local pass="$(bw generate --length 50)"
+      pass=$(bw generate --length 50)
 
       # use "Here Documents" shell feature to pipe session data securely from $BW_SESSION to gpg
       # this avoids leaking variable contents to pipe or process snooping
@@ -63,8 +80,9 @@ EOF
       # --passphrase-fd 3 : send passphrase over file descriptor 3 to avoid echoing it into stdin (leaking to process list)
       # --batch           : necessary for --passphrase-fd
       # --output -        : force gpg to send output over stdout (piped to perm-secured file)
+      [[ ${argVerbose} == true ]] && outputMode="-vv" || outputMode=""
       encryptedSessionKey=$(
-        gpg --symmetric --compress-level 0 --yes --passphrase-fd 3 --batch --output - <<EOF2 3<<EOF3
+        gpg --symmetric --armor --compress-level 0 --yes --passphrase-fd 3 --batch --output - ${outputMode} <<EOF2 3<<EOF3
 ${sessionKey}
 EOF2
 ${pass}
@@ -72,48 +90,74 @@ EOF3
       )
 
       # get the 8-octet hex-encoded salt value used during encryption:
-      salt="$((
-        echo | gpg --list-packets <<EOF
+      salt=$((
+        echo | gpg --list-packets 2>&1 <<EOF
 ${encryptedSessionKey}
 EOF
-      ) | grep -o '[0-9A-F]\{16\}')"
+      ) | grep -o '[0-9A-F]\{16\}')
 
-      encodedSessionKey="$(
+      encodedSessionKey=$(
         xxd -plain -cols 9999 <<EOF
 ${encryptedSessionKey}
 EOF
-      )"
+      )
 
       # store the encrypted session key in gpg-agent
-      gpg-connect-agent 1>/dev/null <<EOF
+      [[ ${argVerbose} == true ]] && outputMode="-vv" || outputMode="1>/dev/null"
+      gpg-connect-agent ${outputMode} <<EOF
 putval bwfzf ${encodedSessionKey}
 EOF
 
       # hex-encode the passphrase for use with gpg-connect-agent preset_passphrase
       # tr -d '\n' - need to remove trailing newline from EOF input
-      hexPass="$(
+      hexPass=$(
         (tr -d '\n' | hexdump -v -e '/1 "%02X"') <<EOF
 ${pass}
 EOF
-      )"
+      )
 
       # preset the passphrase in gpg-agent
       # "S" prefix necessary for salt-based cacheid: https://superuser.com/a/1485486/1093343
-      gpg-connect-agent 1>/dev/null <<EOF
+      [[ ${argVerbose} == true ]] && outputMode="-vv" || outputMode="1>/dev/null"
+      gpg-connect-agent ${outputMode} <<EOF
 preset_passphrase S${salt} -1 ${hexPass}
 EOF
 
-      echo '----start-debug----'
-      echo
-      echo $sessionKey
-      echo
-      echo $encryptedSessionKey
-      echo
-      echo $encodedSessionKey
-      echo
-      echo $salt
-      echo
-      echo '-----end-debug-----'
+      if [[ ${argDebug} == true ]]; then
+        retrievedSessionKey=$(gpg-connect-agent 'getval bwfzf' /bye | sed 's/[^a-z0-9]//g')
+        decodedSessionKey=$(
+          xxd -plain -revert -cols 9999 <<EOF
+${retrievedSessionKey}
+EOF
+        )
+        [[ ${argVerbose} == true ]] && outputMode="-vv" || outputMode="1>/dev/null"
+        decryptedSessionKey=$(
+          gpg --decrypt --armor ${outputMode} <<EOF
+${decodedSessionKey}
+EOF
+        )
+        echo '┌───decrypted-session-key───┐'
+        echo ${sessionKey}
+        echo '└───────────────────────────┘'
+        echo '┌───encrypted-session-key───┐'
+        echo ${encryptedSessionKey}
+        echo '└───────────────────────────┘'
+        echo '┌──────encryption-salt──────┐'
+        echo ${salt}
+        echo '└───────────────────────────┘'
+        echo '┌────encoded-session-key────┐'
+        echo ${encodedSessionKey}
+        echo '└───────────────────────────┘'
+        echo '┌───retrieved-session-key───┐'
+        echo ${retrievedSessionKey}
+        echo '└───────────────────────────┘'
+        echo '┌────decoded-session-key────┐'
+        echo ${decodedSessionKey}
+        echo '└───────────────────────────┘'
+        echo '┌───decrypted-session-key───┐'
+        echo ${decryptedSessionKey}
+        echo '└───────────────────────────┘'
+      fi
     fi
 
     # restore gpg/pinentry env vars

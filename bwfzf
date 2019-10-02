@@ -1,6 +1,27 @@
 #!/usr/bin/env bash
 
+bwfzf-argparse() {
+  local arg
+  local args=("$@")
+  local argIdx=0
+  while true; do
+    arg="${args[argIdx]-}"
+    (( argIdx++ )) || true
+    case "${arg}" in
+      "-v") argVerbose=true ;;
+      "--verbose") argVerbose=true ;;
+      "--debug") argDebug=true ;;
+      "") break ;;
+    esac
+  done
+}
+
 bwfzf() {
+  # parse args
+  local argVerbose=false
+  local argDebug=false
+  bwfzf-argparse "$@"
+
   local bwItem
   local bwItemId
   local bwItems
@@ -9,7 +30,9 @@ bwfzf() {
   local nextField
   local sessionKey
 
-  clear
+  if [[ "${argVerbose}" == false ]]; then
+    clear
+  fi
 
   # use "Here Documents" piping to send "bw list items" result (which contains passwords)
   # securly to jq which will sanitize it into a list of "name username id" rows (no passwords)
@@ -30,7 +53,7 @@ EOF
 
     export BW_SESSION="${sessionKey}"
 
-    bwfzf
+    bwfzf "$@"
 
   else
     # invoke fzf on items list

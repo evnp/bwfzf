@@ -20,5 +20,5 @@ bwfzf-autolock() {
     fi
   fi
 
-  bwfzf
+  bwfzf "$@"
 }
