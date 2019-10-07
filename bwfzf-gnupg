@@ -9,49 +9,106 @@ bwfzf-gnupg() {
   local argDebug=false
   bwfzf-argparse "$@"
 
+  local originalGpgTty
+
+  local sessionKey="${BW_SESSION}"
+  local encryptedSessionKey  # encrypted bitwarden session key data
+  local encodedSessionKey    # encrypted and hex-encoded session key data
+  local retrievedSessionKey  # encoded session key retrieved from gpg-agent
+  local decodedSessionKey    # encrypted session key retrieved from gpg-agent
+  local decryptedSessionKey  # decryped session key retrieved from gpg-agent
+
+  local pass       # randomly generated (via bitwarden) passphrase used for session key symmetric encryption
+  local salt       # randomly chosen salt used during session key symmetric encryption
+  local hexPass    # hex-encoded passphrase used with gpg-connect-agent preset_passphrase
+  local outputMode # temp var used to store command args that invoke verbose or quiet mode for commands
+
   if hash gpg 2>/dev/null; then
+  # use subshell so encrypt/decrypt helper functions are not exposed globally
+  (
+
+    gpgConnect() {
+      local verbose="$1"
+      local outputMode=""
+      [[ "${verbose}" == true ]] && outputMode="-vv"
+      # sed: remove extraneous/non-hex gpg output:
+      # "D 0123456789ABCDEF OK" -> "0123456789ABCDEF"
+      gpg-connect-agent ${outputMode} | sed 's/[^a-z0-9]//g'
+    }
+
+    gpgGetSession() {
+      local verbose="$1"
+      gpgConnect "${verbose}" <<EOF
+getval bwfzfs
+EOF
+    }
+
+    gpgPutSession() {
+      local value=$(cat)
+      local verbose="$1"
+      gpgConnect "${verbose}" <<EOF
+putval bwfzfs ${value}
+EOF
+    }
+
+    gpgGetFilePath() {
+      local verbose="$1"
+      gpgConnect "${verbose}" <<EOF
+getval bwfzff
+EOF
+    }
+
+    gpgPutFilePath() {
+      local value=$(cat)
+      local verbose="$1"
+      gpgConnect "${verbose}" <<EOF
+putval bwfzff ${value}
+EOF
+    }
+
+    encode() {
+      xxd -plain -cols 9999
+    }
+
+    decode() {
+      xxd -plain -revert -cols 9999
+    }
+
+    #encrypt() {
+    #  #TODO
+    #}
+
+    decrypt() {
+      local verbose="$1"
+      if [[ "${verbose}" == true ]]; then
+        gpg --decrypt --armor -vv
+      else
+        gpg --decrypt --armor 2>/dev/null
+      fi
+    }
 
     # ensure no user-set GPG_TTY interferes with gpg/pinentry interaction below; restore at end of function
-    local originalGpgTty="${GPG_TTY}"
+    originalGpgTty="${GPG_TTY}"
     export GPG_TTY=""
 
-    local sessionKey="${BW_SESSION}"
-    local encryptedSessionKey  # encrypted bitwarden session key data
-    local encodedSessionKey    # encrypted and hex-encoded session key data
-    local retrievedSessionKey
-    local decodedSessionKey
-    local decryptedSessionKey
-
-    local outputMode
-    local salt
-    local pass
-    local hexPass
+    sessionKey="${BW_SESSION}"
 
     # set BW_SESSION env var from gpg if necessary
     if [[ -z "${sessionKey}" ]]; then
-      retrievedSessionKey=$(gpg-connect-agent 'getval bwfzf' /bye | sed 's/[^a-z0-9]//g')
-      decodedSessionKey=$(
-        xxd -plain -revert -cols 9999 <<EOF
-${retrievedSessionKey}
-EOF
+      sessionKey=$(
+        gpgGetSession "${argVerbose}" | decode | decrypt "${argVerbose}"
       )
-      [[ ${argVerbose} == true ]] && outputMode="-vv" || outputMode="2>/dev/null"
-      decryptedSessionKey=$(
-        gpg --decrypt --armor ${outputMode} <<EOF
-${decodedSessionKey}
-EOF
-      )
-      export BW_SESSION=${decryptedSessionKey}
+      export BW_SESSION="${sessionKey}"
 
       if [[ ${argDebug} == true ]]; then
         echo '┌───retrieved-session-key───┐'
-        echo ${retrievedSessionKey}
+        echo $(gpgGetSession)
         echo '└───────────────────────────┘'
         echo '┌────decoded-session-key────┐'
-        echo ${decodedSessionKey}
+        echo $(gpgGetSession | decode)
         echo '└───────────────────────────┘'
         echo '┌───decrypted-session-key───┐'
-        echo ${decryptedSessionKey}
+        echo $(gpgGetSession | decode | decrypt)
         echo '└───────────────────────────┘'
       fi
     fi
@@ -97,15 +154,14 @@ EOF
       ) | grep -o '[0-9A-F]\{16\}')
 
       encodedSessionKey=$(
-        xxd -plain -cols 9999 <<EOF
+        encode <<EOF
 ${encryptedSessionKey}
 EOF
       )
 
       # store the encrypted session key in gpg-agent
-      [[ ${argVerbose} == true ]] && outputMode="-vv" || outputMode="1>/dev/null"
-      gpg-connect-agent ${outputMode} <<EOF
-putval bwfzf ${encodedSessionKey}
+      gpgPutSession ${argVerbose} <<EOF
+${encodedSessionKey}
 EOF
 
       # hex-encode the passphrase for use with gpg-connect-agent preset_passphrase
@@ -118,24 +174,11 @@ EOF
 
       # preset the passphrase in gpg-agent
       # "S" prefix necessary for salt-based cacheid: https://superuser.com/a/1485486/1093343
-      [[ ${argVerbose} == true ]] && outputMode="-vv" || outputMode="1>/dev/null"
-      gpg-connect-agent ${outputMode} <<EOF
+      gpgConnect ${argVerbose} <<EOF
 preset_passphrase S${salt} -1 ${hexPass}
 EOF
 
       if [[ ${argDebug} == true ]]; then
-        retrievedSessionKey=$(gpg-connect-agent 'getval bwfzf' /bye | sed 's/[^a-z0-9]//g')
-        decodedSessionKey=$(
-          xxd -plain -revert -cols 9999 <<EOF
-${retrievedSessionKey}
-EOF
-        )
-        [[ ${argVerbose} == true ]] && outputMode="-vv" || outputMode="1>/dev/null"
-        decryptedSessionKey=$(
-          gpg --decrypt --armor ${outputMode} <<EOF
-${decodedSessionKey}
-EOF
-        )
         echo '┌───decrypted-session-key───┐'
         echo ${sessionKey}
         echo '└───────────────────────────┘'
@@ -149,19 +192,20 @@ EOF
         echo ${encodedSessionKey}
         echo '└───────────────────────────┘'
         echo '┌───retrieved-session-key───┐'
-        echo ${retrievedSessionKey}
+        echo $(gpgGetSession)
         echo '└───────────────────────────┘'
         echo '┌────decoded-session-key────┐'
-        echo ${decodedSessionKey}
+        echo $(gpgGetSession | decode)
         echo '└───────────────────────────┘'
         echo '┌───decrypted-session-key───┐'
-        echo ${decryptedSessionKey}
+        echo $(gpgGetSession | decode | decrypt)
         echo '└───────────────────────────┘'
       fi
     fi
 
     # restore gpg/pinentry env vars
     export GPG_TTY="${originalGpgTty}"
+  )
   else
     echo "Error: You're trying to use `bwfzf-gnupg` but `gpg` is not installed. Try `brew install gnupg` or consult the GnuPG docs for installation instructions on your platform: https://www.gnupg.org/documentation"
   fi
