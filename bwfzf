@@ -9,6 +9,9 @@ bwfzf-argparse() {
     (( argIdx++ )) || true
     case "${arg}" in
       "-v") argVerbose=true ;;
+      "-d") argDebug=true ;;
+      "-vd") argVerbose=true && argDebug=true ;;
+      "-dv") argVerbose=true && argDebug=true ;;
       "--verbose") argVerbose=true ;;
       "--debug") argDebug=true ;;
       "") break ;;

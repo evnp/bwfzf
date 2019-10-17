@@ -9,6 +9,8 @@ bwfzf-gnupg() {
 	local argDebug=false
 	bwfzf-argparse "$@"
 
+	local V="${argVerbose}"  # alias for code readability
+
 	local originalGpgTty
 
 	local sessionKey="${BW_SESSION}"
@@ -137,6 +139,62 @@ bwfzf-gnupg() {
 			fi
 		}
 
+		section() {
+			local data="$(cat)"
+			local nthSection="$1"
+			local numSections="$2"
+			# round up -> (numer+(denom-1))/denom
+			local lenSection=$(( ( ${#data} + ( numSections - 1 ) ) / numSections ))
+			local start=$(( ( lenSection * ( nthSection - 1 ) ) + 1 ))
+			local end=$(( ( start + lenSection ) - 1 ))
+
+			cut "-c${start}-${end}" <<-EOF
+				${data}
+			EOF
+		}
+
+		outputDebugInfo() {
+			echo '┌────retrieved-file-path────┐'
+			gpgGetFilePath
+			echo '└───────────────────────────┘'
+			echo '┌─────decoded-file-path─────┐'
+			gpgGetFilePath | decode
+			echo '└───────────────────────────┘'
+			echo '┌────decrypted-file-path────┐'
+			gpgGetFilePath | decode | decrypt
+			echo '└───────────────────────────┘'
+
+			echo '┌─retrieved-session-key-1/2─┐'
+			cat <$( gpgGetFilePath | decode | decrypt )
+			echo '└───────────────────────────┘'
+			echo '┌──decoded-session-key-1/2──┐'
+			decode <$( gpgGetFilePath | decode | decrypt )
+			echo '└───────────────────────────┘'
+			echo '┌─decrypted-session-key-1/2─┐'
+			( decode | decrypt ) <$( gpgGetFilePath | decode | decrypt )
+			echo '└───────────────────────────┘'
+
+			echo '┌─retrieved-session-key-2/2─┐'
+			gpgGetSession
+			echo '└───────────────────────────┘'
+			echo '┌──decoded-session-key-2/2──┐'
+			gpgGetSession | decode
+			echo '└───────────────────────────┘'
+			echo '┌─decrypted-session-key-2/2─┐'
+			gpgGetSession | decode | decrypt
+			echo '└───────────────────────────┘'
+
+			echo '┌final-decrypted-session-key┐'
+			cat <<-EOF
+				$(
+					( decode | decrypt ) <$( gpgGetFilePath | decode | decrypt )
+				)$(
+					gpgGetSession | decode | decrypt
+				)
+			EOF
+			echo '└───────────────────────────┘'
+		}
+
 		# ensure no user-set GPG_TTY interferes with gpg/pinentry interaction below; restore at end of function
 		originalGpgTty="${GPG_TTY}"
 		export GPG_TTY=""
@@ -145,22 +203,21 @@ bwfzf-gnupg() {
 
 		# set BW_SESSION env var from gpg if necessary
 		if [[ -z "${sessionKey}" ]]; then
-			sessionKey=$(
-				gpgGetSession "${argVerbose}" | decode | decrypt "${argVerbose}"
-			)
+
+			# combine 2 session key parts:
+			# ( decode | decrypt $V ) <$( gpgGetFilePath $V | decode | decrypt $V )
+			#   ^ 1st half of session key, stored encrypted in temp file
+			# gpgGetSession $V | decode | decrypt $V
+			#   ^ 2nd half of session key, stored encrypted in gpg-agent key-value store
+			sessionKey="$(
+				( decode | decrypt $V ) <$( gpgGetFilePath $V | decode | decrypt $V )
+			)$(
+				gpgGetSession $V | decode | decrypt $V
+			)"
+
 			export BW_SESSION="${sessionKey}"
 
-			if [[ ${argDebug} == true ]]; then
-				echo '┌───retrieved-session-key───┐'
-				gpgGetSession
-				echo '└───────────────────────────┘'
-				echo '┌────decoded-session-key────┐'
-				gpgGetSession | decode
-				echo '└───────────────────────────┘'
-				echo '┌───decrypted-session-key───┐'
-				gpgGetSession | decode | decrypt
-				echo '└───────────────────────────┘'
-			fi
+			[[ ${argDebug} == true ]] && outputDebugInfo
 		fi
 
 		if hash bwfzf-autolock 2>/dev/null; then
@@ -174,37 +231,21 @@ bwfzf-gnupg() {
 		# if $BW_SESSION has changed, update session key stored via gpg
 		if [[ ${sessionKey} != ${BW_SESSION} ]]; then
 			sessionKey=${BW_SESSION}
+			filePath=$( mktemp )  # perms should be 600 / -rw------- (r/w only curr user)
 
-			(encrypt | encode | gpgPutSession ${argVerbose}) <<-EOF
+			( encrypt $V | encode | gpgPutFilePath $V ) <<-EOF
+				${filePath}
+			EOF
+
+			( section 1 2 | encrypt $V | encode > "${filePath}" ) <<-EOF
 				${sessionKey}
 			EOF
 
-			if [[ ${argDebug} == true ]]; then
-				echo '┌───decrypted-session-key───┐'
-				cat <<-EOF
-					${sessionKey}
-				EOF
-				echo '└───────────────────────────┘'
-				echo '┌───encrypted-session-key───┐'
-				encrypt <<-EOF
-					${sessionKey}
-				EOF
-				echo '└───────────────────────────┘'
-				echo '┌────encoded-session-key────┐'
-				(encrypt | encode) <<-EOF
-					${sessionKey}
-				EOF
-				echo '└───────────────────────────┘'
-				echo '┌───retrieved-session-key───┐'
-				gpgGetSession
-				echo '└───────────────────────────┘'
-				echo '┌────decoded-session-key────┐'
-				gpgGetSession | decode
-				echo '└───────────────────────────┘'
-				echo '┌───decrypted-session-key───┐'
-				gpgGetSession | decode | decrypt
-				echo '└───────────────────────────┘'
-			fi
+			( section 2 2 | encrypt $V | encode | gpgPutSession $V ) <<-EOF
+				${sessionKey}
+			EOF
+
+			[[ ${argDebug} == true ]] && outputDebugInfo
 		fi
 
 		# restore gpg/pinentry env vars
