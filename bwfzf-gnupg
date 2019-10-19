@@ -1,8 +1,5 @@
 #!/usr/bin/env bash
 
-# TODO: add verbose mode which causes gpg commands to provide verbose output
-# TODO: store half of session in randomly-named temp file (created via mktemp)
-
 bwfzf-gnupg() {
 	# parse args
 	local argVerbose=false
@@ -34,7 +31,7 @@ bwfzf-gnupg() {
 			local outputMode=""
 			[[ "${verbose}" == true ]] && outputMode="-vv"
 			# sed: remove extraneous/non-hex gpg output:
-			# "D 0123456789ABCDEF OK" -> "0123456789ABCDEF"
+			# "D 0123456789abcdef OK" -> "0123456789abcdef"
 			gpg-connect-agent ${outputMode} | sed 's/[^a-z0-9]//g'
 		}
 
@@ -46,7 +43,7 @@ bwfzf-gnupg() {
 		}
 
 		gpgPutSession() {
-			local data=$(cat)
+			local data=$( cat )
 			local verbose="$1"
 			gpgConnect "${verbose}" <<-EOF
 				putval bwfzfs ${data}
@@ -61,10 +58,28 @@ bwfzf-gnupg() {
 		}
 
 		gpgPutFilePath() {
-			local data=$(cat)
+			local data=$( cat )
 			local verbose="$1"
 			gpgConnect "${verbose}" <<-EOF
 				putval bwfzff ${data}
+			EOF
+		}
+
+		if hash bitagent 2>/dev/null; then
+			# start bitagent if it's not running already
+			bitagent ~/.bwfzfs.sock 2>/dev/null
+		fi
+
+		bitAgentPutSession() {
+			local data=$( cat )
+			nc -U ~/.bwfzfs.sock <<-EOF
+				P${data}
+			EOF
+		}
+
+		bitAgentGetSession() {
+			nc -U ~/.bwfzfs.sock <<-EOF
+				G
 			EOF
 		}
 
@@ -77,13 +92,13 @@ bwfzf-gnupg() {
 		}
 
 		encrypt() {
-			local data=$(cat)
+			local data=$( cat )
 			local verbose="$1"
 			local outputMode=""
 
 			# generate passphrase for gpg symmetric encryption
 			# https://security.stackexchange.com/questions/113309/is-a-43-character-gpg-symmetric-passphrase-as-secure-as-a-256-bit-key
-			local pass=$(bw generate --length 50)
+			local pass=$( bw generate --length 50 )
 
 			# use "Here Documents" shell feature to pipe session data securely from $BW_SESSION to gpg
 			# this avoids leaking variable contents to pipe or process snooping
@@ -105,16 +120,16 @@ bwfzf-gnupg() {
 			)
 
 			# get the 8-octet hex-encoded salt value used during encryption:
-			local salt="$((
-				echo | gpg --list-packets 2>&1 <<-EOF
+			local salt="$(
+			  echo | ( gpg --list-packets 2>&1 | grep -o '[0-9A-F]\{16\}' ) <<-EOF
 					${encryptedData}
 				EOF
-			) | grep -o '[0-9A-F]\{16\}')"
+			)"
 
 			# hex-encode the passphrase for use with gpg-connect-agent preset_passphrase
 			# tr -d '\n' - need to remove trailing newline from EOF input
 			local hexPass="$(
-				(tr -d '\n' | hexdump -v -e '/1 "%02X"') <<-EOF
+				( tr -d '\n' | hexdump -v -e '/1 "%02X"' ) <<-EOF
 					${pass}
 				EOF
 			)"
@@ -139,14 +154,14 @@ bwfzf-gnupg() {
 			fi
 		}
 
-		section() {
-			local data="$(cat)"
-			local nthSection="$1"
-			local numSections="$2"
+		part() {
+			local data="$( cat )"
+			local nthPart="$1"
+			local numParts="$2"
 			# round up -> (numer+(denom-1))/denom
-			local lenSection=$(( ( ${#data} + ( numSections - 1 ) ) / numSections ))
-			local start=$(( ( lenSection * ( nthSection - 1 ) ) + 1 ))
-			local end=$(( ( start + lenSection ) - 1 ))
+			local lenPart=$(( ( ${#data} + ( numParts - 1 ) ) / numParts ))
+			local start=$(( ( lenPart * ( nthPart - 1 ) ) + 1 ))
+			local end=$(( ( start + lenPart ) - 1 ))
 
 			cut "-c${start}-${end}" <<-EOF
 				${data}
@@ -164,33 +179,56 @@ bwfzf-gnupg() {
 			gpgGetFilePath | decode | decrypt
 			echo '└───────────────────────────┘'
 
-			echo '┌─retrieved-session-key-1/2─┐'
+			local part=1
+			local parts=2
+
+			if hash bitagent 2>/dev/null; then
+				parts=3
+				echo "┌─retrieved-session-key-${part}/${parts}─┐"
+				bitAgentGetSession
+				echo '└───────────────────────────┘'
+				echo "┌──decoded-session-key-${part}/${parts}──┐"
+				bitAgentGetSession | decode
+				echo '└───────────────────────────┘'
+				part=$(( part + 1 ))
+			fi
+
+			echo "┌─retrieved-session-key-${part}/${parts}─┐"
 			cat <$( gpgGetFilePath | decode | decrypt )
 			echo '└───────────────────────────┘'
-			echo '┌──decoded-session-key-1/2──┐'
+			echo "┌──decoded-session-key-${part}/${parts}──┐"
 			decode <$( gpgGetFilePath | decode | decrypt )
 			echo '└───────────────────────────┘'
-			echo '┌─decrypted-session-key-1/2─┐'
+			echo "┌─decrypted-session-key-${part}/${parts}─┐"
 			( decode | decrypt ) <$( gpgGetFilePath | decode | decrypt )
 			echo '└───────────────────────────┘'
 
-			echo '┌─retrieved-session-key-2/2─┐'
+			part=$(( part + 1 ))
+
+			echo "┌─retrieved-session-key-${part}/${parts}─┐"
 			gpgGetSession
 			echo '└───────────────────────────┘'
-			echo '┌──decoded-session-key-2/2──┐'
+			echo "┌──decoded-session-key-${part}/${parts}──┐"
 			gpgGetSession | decode
 			echo '└───────────────────────────┘'
-			echo '┌─decrypted-session-key-2/2─┐'
+			echo "┌─decrypted-session-key-${part}/${parts}─┐"
 			gpgGetSession | decode | decrypt
 			echo '└───────────────────────────┘'
 
 			echo '┌final-decrypted-session-key┐'
+			local sessionKey=""
+			if hash bitagent 2>/dev/null; then
+				sessionKey="${sessionKey}$(
+					bitAgentGetSession | decode
+				)"
+			fi
+			sessionKey="${sessionKey}$(
+				( decode | decrypt ) <$( gpgGetFilePath | decode | decrypt )
+			)$(
+				gpgGetSession | decode | decrypt
+			)"
 			cat <<-EOF
-				$(
-					( decode | decrypt ) <$( gpgGetFilePath | decode | decrypt )
-				)$(
-					gpgGetSession | decode | decrypt
-				)
+				${sessionKey}
 			EOF
 			echo '└───────────────────────────┘'
 		}
@@ -203,13 +241,21 @@ bwfzf-gnupg() {
 
 		# set BW_SESSION env var from gpg if necessary
 		if [[ -z "${sessionKey}" ]]; then
+			sessionKey=""
+
+			# if bitagent is available, pull first N bytes from there (N defined below)
+			if hash bitagent 2>/dev/null; then
+				sessionKey="${sessionKey}$(
+					bitAgentGetSession | decode
+				)"
+			fi
 
 			# combine 2 session key parts:
 			# ( decode | decrypt $V ) <$( gpgGetFilePath $V | decode | decrypt $V )
 			#   ^ 1st half of session key, stored encrypted in temp file
 			# gpgGetSession $V | decode | decrypt $V
 			#   ^ 2nd half of session key, stored encrypted in gpg-agent key-value store
-			sessionKey="$(
+			sessionKey="${sessionKey}$(
 				( decode | decrypt $V ) <$( gpgGetFilePath $V | decode | decrypt $V )
 			)$(
 				gpgGetSession $V | decode | decrypt $V
@@ -237,11 +283,29 @@ bwfzf-gnupg() {
 				${filePath}
 			EOF
 
-			( section 1 2 | encrypt $V | encode > "${filePath}" ) <<-EOF
+			# if bitagent is available, store first N bytes there
+			# TODO: encrypt these bytes - bitagent has 256 max value size that is not configurable;
+			#       unfortunately armored encryption results in too big of a payload and un-armored
+			#       is not resiliant enough to survive storage in bitagent
+			#       open a PR on bitagent making this value configurable then use "part" function to
+			#       encrypt and store a full 3rd of session key (following convention for gpg-agent)
+			if hash bitagent 2>/dev/null; then
+				local bitAgentBytes=16
+				( cut "-c-${bitAgentBytes}" | encode | bitAgentPutSession ) <<-EOF
+					${sessionKey}
+				EOF
+				sessionKey=$(
+					cut "-c$(( bitAgentBytes + 1 ))-" <<-EOF
+						${sessionKey}
+					EOF
+				)
+			fi
+
+			( part 1 2 | encrypt $V | encode > "${filePath}" ) <<-EOF
 				${sessionKey}
 			EOF
 
-			( section 2 2 | encrypt $V | encode | gpgPutSession $V ) <<-EOF
+			( part 2 2 | encrypt $V | encode | gpgPutSession $V ) <<-EOF
 				${sessionKey}
 			EOF
 
