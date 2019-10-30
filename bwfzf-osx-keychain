@@ -1,33 +1,33 @@
 #!/usr/bin/env bash
 
-bwfzf-osx-keychain() {
-  if hash security 2>/dev/null; then
-    local sessionKey="${BW_SESSION}"
+bwfzf-session-persistence() {
+	# invoked as
+	# $ bwfzf-session-persistence action:get -v
+	# $ bwfzf-session-persistence action:put -dv
+	# handle arguments accordingly:
+	local argAction="get"
+	local argVerbose=false
+	local argDebug=false
+	bwfzf-argparse "$@"
 
-    # set BW_SESSION env var from keychain if necessary
-    if [[ -z "${sessionKey}" ]]; then
-      sessionKey="$(security find-generic-password -a "${USER}" -s bw -w 2> /dev/null)"
-      export BW_SESSION="${sessionKey}"
-    fi
+  if ! hash security 2>/dev/null; then
+    echo "Error: You're trying to use `bwfzf-osx-keychain` but the keychain cli command `security` does not exist. Are you sure this is OSX?" >&2
+		exit 1
+	fi
 
-    if hash bwfzf-autolock 2>/dev/null; then
-      bwfzf-autolock
-    elif hash bwfzf 2>/dev/null; then
-      bwfzf
-    else
-      echo "Error: You're trying to use `bwfzf-gnupg` but the command `bwfzf` is not available. Add `source /path/to/bwfzf` to your .bashrc and try again."
-    fi
+	local outputMode="-q"
+	if [[ "${argVerbose}" == true ]]; then
+		outputMode="-v"
+	fi
 
-    # if $BW_SESSION has changed, update session key stored via keychain
-    if [[ "${sessionKey}" != "${BW_SESSION}" ]]; then
-      # -U : update if already exists
-      # -T : revoke access for all applications (set blank "")
-      # EOF: supply BW_SESSION data over stdin so it's not exposed in process list
-      security -i <<EOF
-add-generic-password -a "${USER}" -s bw -U -T "" -w "${BW_SESSION}"
-EOF
-    fi
-  else
-    echo "Error: You're trying to use `bwfzf-osx-keychain` but the keychain cli command `security` does not exist. Are you sure this is OSX?"
-  fi
+	if [[ "${argAction}" == "get" ]]; then
+		security -i "${outputMode}" 2>/dev/null <<-EOF
+			find-generic-password -a "${USER}" -s bw -w
+		EOF
+	elif [[ "${argAction}" == "put" ]]; then
+		local sessionKey=$( cat )   # take session key from stdin
+		security -i "${outputMode}" 2>/dev/null <<-EOF
+			add-generic-password -a "${USER}" -s bw -U -T "" -w "${sessionKey}"
+		EOF
+	fi
 }

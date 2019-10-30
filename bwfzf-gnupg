@@ -1,315 +1,306 @@
 #!/usr/bin/env bash
 
-bwfzf-gnupg() {
-	# parse args
+bwfzf-session-persistence() {
+	# invoked as
+	# $ bwfzf-session-persistence action:get -v
+	# $ bwfzf-session-persistence action:put -dv
+	# handle arguments accordingly:
+	local argAction="get"
 	local argVerbose=false
 	local argDebug=false
 	bwfzf-argparse "$@"
 	local V="${argVerbose}"  # alias for code readability
 
-	if hash gpg 2>/dev/null; then
-	# use subshell so encrypt/decrypt helper functions are not exposed globally
-	(
+	# ensure gpg is installed
+	if ! hash gpg 2>/dev/null; then
+		echo "Error: You're trying to use `bwfzf-gnupg` but `gpg` is not installed. Try `brew install gnupg` or consult the GnuPG docs for installation instructions on your platform: https://www.gnupg.org/documentation"
+		exit 1
+	fi
 
-		gpgConnect() {
-			local verbose="$1"
-			local outputMode=""
-			[[ "${verbose}" == true ]] && outputMode="-vv"
-			# sed: remove extraneous/non-hex gpg output:
-			# "D 0123456789abcdef OK" -> "0123456789abcdef"
-			gpg-connect-agent ${outputMode} | sed 's/[^a-z0-9]//g'
-		}
+	( # use subshell so encrypt/decrypt helper functions are not exposed globally
 
-		gpgGetSession() {
-			local verbose="$1"
-			gpgConnect "${verbose}" <<-EOF
-				getval bwfzfs
-			EOF
-		}
+	gpgConnect() {
+		local verbose="$1"
+		local outputMode=""
+		[[ "${verbose}" == true ]] && outputMode="-vv"
+		# sed: remove extraneous/non-hex gpg output:
+		# "D 0123456789abcdef OK" -> "0123456789abcdef"
+		gpg-connect-agent ${outputMode} | sed 's/[^a-z0-9]//g'
+	}
 
-		gpgPutSession() {
-			local data=$( cat )
-			local verbose="$1"
-			gpgConnect "${verbose}" <<-EOF
-				putval bwfzfs ${data}
-			EOF
-		}
+	gpgGetSession() {
+		local verbose="$1"
+		gpgConnect "${verbose}" <<-EOF
+			getval bwfzfs
+		EOF
+	}
 
-		gpgGetFilePath() {
-			local verbose="$1"
-			gpgConnect "${verbose}" <<-EOF
-				getval bwfzff
-			EOF
-		}
+	gpgPutSession() {
+		local data=$( cat )
+		local verbose="$1"
+		gpgConnect "${verbose}" <<-EOF
+			putval bwfzfs ${data}
+		EOF
+	}
 
-		gpgPutFilePath() {
-			local data=$( cat )
-			local verbose="$1"
-			gpgConnect "${verbose}" <<-EOF
-				putval bwfzff ${data}
-			EOF
-		}
+	gpgGetFilePath() {
+		local verbose="$1"
+		gpgConnect "${verbose}" <<-EOF
+			getval bwfzff
+		EOF
+	}
 
+	gpgPutFilePath() {
+		local data=$( cat )
+		local verbose="$1"
+		gpgConnect "${verbose}" <<-EOF
+			putval bwfzff ${data}
+		EOF
+	}
+
+	if hash bitagent 2>/dev/null; then
+		# start bitagent if it's not running already
+		bitagent ~/.bwfzfs.sock 2>/dev/null
+	fi
+
+	bitAgentPutSession() {
+		local data=$( cat )
 		if hash bitagent 2>/dev/null; then
-			# start bitagent if it's not running already
-			bitagent ~/.bwfzfs.sock 2>/dev/null
+			nc -U ~/.bwfzfs.sock <<-EOF
+				P${data}
+			EOF
 		fi
+	}
 
-		bitAgentPutSession() {
-			local data=$( cat )
-			if hash bitagent 2>/dev/null; then
-				nc -U ~/.bwfzfs.sock <<-EOF
-					P${data}
-				EOF
-			fi
-		}
+	bitAgentGetSession() {
+		if hash bitagent 2>/dev/null; then
+			nc -U ~/.bwfzfs.sock <<-EOF
+				G
+			EOF
+		fi
+	}
 
-		bitAgentGetSession() {
-			if hash bitagent 2>/dev/null; then
-				nc -U ~/.bwfzfs.sock <<-EOF
-					G
-				EOF
-			fi
-		}
+	encode() {
+		xxd -plain -cols 9999
+	}
 
-		encode() {
-			xxd -plain -cols 9999
-		}
+	decode() {
+		xxd -plain -revert -cols 9999
+	}
 
-		decode() {
-			xxd -plain -revert -cols 9999
-		}
+	wrapArmor() {
+		local data=$( cat )
+		cat <<-EOF
+			-----BEGIN PGP MESSAGE-----
+			${data}
+			-----END PGP MESSAGE-----
+		EOF
+	}
 
-		wrapArmor() {
-			local data=$( cat )
-			cat <<-EOF
-				-----BEGIN PGP MESSAGE-----
+	unwrapArmor() {
+		sed -e 's/-----BEGIN PGP MESSAGE-----//g' -e 's/-----END PGP MESSAGE-----//g'
+	}
+
+	encrypt() {
+		local data=$( cat )
+		local verbose="$1"
+		local outputMode=""
+
+		# generate passphrase for gpg symmetric encryption
+		# https://security.stackexchange.com/questions/113309/is-a-43-character-gpg-symmetric-passphrase-as-secure-as-a-256-bit-key
+		local pass=$( bw generate --length 50 )
+
+		# use "Here Documents" shell feature to pipe session data securely to gpg
+		# this avoids leaking variable contents to pipe or process snooping
+		# <<-EOF used instead of <<< for portability,
+		#        per https://stackoverflow.com/a/21171367/11776945
+		# --symmetric       : passphrase-only encryption, no public/private keypair
+		# --yes             : (over)write output file even if it already exists
+		# --passphrase-fd 3 : send passphrase over file descriptor 3 to avoid echo
+		# --batch           : necessary for --passphrase-fd
+		# --armor           : encrypt to "email-safe" ascii format; more resiliant
+		# --output -        : force gpg to send output over stdout; no write to disk
+		[[ ${verbose} == true ]] && outputMode="-vv"
+		local encryptedData=$(
+			gpg --symmetric --yes --passphrase-fd 3 --batch --armor --output - ${outputMode} <<-EOF 3<<-EOFFD3
 				${data}
-				-----END PGP MESSAGE-----
 			EOF
-		}
+				${pass}
+			EOFFD3
+		)
 
-		unwrapArmor() {
-			sed -e 's/-----BEGIN PGP MESSAGE-----//g' -e 's/-----END PGP MESSAGE-----//g'
-		}
-
-		encrypt() {
-			local data=$( cat )
-			local verbose="$1"
-			local outputMode=""
-
-			# generate passphrase for gpg symmetric encryption
-			# https://security.stackexchange.com/questions/113309/is-a-43-character-gpg-symmetric-passphrase-as-secure-as-a-256-bit-key
-			local pass=$( bw generate --length 50 )
-
-			# use "Here Documents" shell feature to pipe session data securely from $BW_SESSION to gpg
-			# this avoids leaking variable contents to pipe or process snooping
-			# <<-EOF used instead of <<< for portability, per https://stackoverflow.com/a/21171367/11776945
-			# --symmetric       : passphrase-only encryption, no public/private keypair
-			# --yes             : (over)write output file even if it already exists
-			# --passphrase-fd 3 : send passphrase over file descriptor 3 to avoid echoing it into stdin (leaking to process list)
-			# --batch           : necessary for --passphrase-fd
-			# --armor           : encrypt to "email-safe" format that's more resiliant to whitespace alterations
-			# --output -        : force gpg to send output over stdout (piped to perm-secured file)
-			# store the encrypted session key in gpg-agent
-			[[ ${verbose} == true ]] && outputMode="-vv"
-			local encryptedData=$(
-				gpg --symmetric --compress-level 0 --yes --passphrase-fd 3 --batch --armor --output - ${outputMode} <<-EOF2 3<<-EOF3
-					${data}
-				EOF2
-					${pass}
-				EOF3
-			)
-
-			# get the 8-octet hex-encoded salt value used during encryption:
-			local salt="$(
-			  echo | ( gpg --list-packets 2>&1 | grep -o '[0-9A-F]\{16\}' ) <<-EOF
-					${encryptedData}
-				EOF
-			)"
-
-			# hex-encode the passphrase for use with gpg-connect-agent preset_passphrase
-			# tr -d '\n' - need to remove trailing newline from EOF input
-			local hexPass="$(
-				( tr -d '\n' | hexdump -v -e '/1 "%02X"' ) <<-EOF
-					${pass}
-				EOF
-			)"
-
-			# preset the passphrase in gpg-agent
-			# "S" prefix necessary for salt-based cacheid: https://superuser.com/a/1485486/1093343
-			gpgConnect ${verbose} <<-EOF
-				preset_passphrase S${salt} -1 ${hexPass}
-			EOF
-
-			cat <<-EOF
+		# get the 8-octet hex-encoded salt value used during encryption:
+		# echo : force immediate command output in all cases; don't wait for user input
+		local salt="$(
+		  echo | ( gpg --list-packets 2>&1 | grep -o '[0-9A-F]\{16\}' ) <<-EOF
 				${encryptedData}
 			EOF
-		}
+		)"
 
-		decrypt() {
-			local verbose="$1"
-			if [[ "${verbose}" == true ]]; then
-				gpg --decrypt -vv --armor
-			else
-				gpg --decrypt 2>/dev/null
-			fi
-		}
-
-		part() {
-			local data="$( cat )"
-			local nthPart="$1"
-			local numParts="$2"
-			# round up -> (numer+(denom-1))/denom
-			local lenPart=$(( ( ${#data} + ( numParts - 1 ) ) / numParts ))
-			local start=$(( ( lenPart * ( nthPart - 1 ) ) + 1 ))
-			local end=$(( ( start + lenPart ) - 1 ))
-
-			cut "-c${start}-${end}" <<-EOF
-				${data}
+		# hex-encode the passphrase for use with gpg-connect-agent preset_passphrase
+		# tr -d '\n' : need to remove trailing newline from EOF input
+		local hexPass="$(
+			( tr -d '\n' | hexdump -v -e '/1 "%02X"' ) <<-EOF
+				${pass}
 			EOF
-		}
+		)"
 
-		outputDebugInfo() {
-			echo '┌────retrieved-file-path────┐'
-			gpgGetFilePath
-			echo '└───────────────────────────┘'
-			echo '┌─────decoded-file-path─────┐'
-			gpgGetFilePath | decode
-			echo '└───────────────────────────┘'
-			echo '┌────decrypted-file-path────┐'
-			gpgGetFilePath | decode | decrypt
-			echo '└───────────────────────────┘'
+		# preset the passphrase in gpg-agent
+		# "S" prefix necessary for salt-based cacheid: https://superuser.com/a/1485486/1093343
+		gpgConnect ${verbose} <<-EOF
+			preset_passphrase S${salt} -1 ${hexPass}
+		EOF
 
-			local part=1
-			local parts=2
+		cat <<-EOF
+			${encryptedData}
+		EOF
+	}
 
-			if hash bitagent 2>/dev/null; then
-				parts=3
-				echo "┌─retrieved-session-key-${part}/${parts}─┐"
-				bitAgentGetSession
-				echo '└───────────────────────────┘'
-				part=$(( part + 1 ))
-			fi
-
-			echo "┌─retrieved-session-key-${part}/${parts}─┐"
-			cat <$( gpgGetFilePath | decode | decrypt )
-			echo '└───────────────────────────┘'
-
-			part=$(( part + 1 ))
-
-			echo "┌─retrieved-session-key-${part}/${parts}─┐"
-			gpgGetSession
-			echo '└───────────────────────────┘'
-
-			echo '┌─full-decoded-session-key──┐'
-			decode <<-EOF
-				$(
-					cat <$( gpgGetFilePath | decode | decrypt )
-				)$(
-					gpgGetSession
-				)$(
-					bitAgentGetSession
-				)
-			EOF
-			echo '└───────────────────────────┘'
-
-			echo '┌─full-wrapped-session-key──┐'
-			( decode | wrapArmor ) <<-EOF
-				$(
-					cat <$( gpgGetFilePath | decode | decrypt )
-				)$(
-					gpgGetSession
-				)$(
-					bitAgentGetSession
-				)
-			EOF
-			echo '└───────────────────────────┘'
-
-			echo '┌─full-decrypted-session-key┐'
-			( decode | wrapArmor | decrypt ) <<-EOF
-				$(
-					cat <$( gpgGetFilePath | decode | decrypt )
-				)$(
-					gpgGetSession
-				)$(
-					bitAgentGetSession
-				)
-			EOF
-			echo '└───────────────────────────┘'
-		}
-
-		# ensure no user-set GPG_TTY interferes with gpg/pinentry interaction below; restore at end of function
-		local originalGpgTty="${GPG_TTY}"
-		export GPG_TTY=""
-
-		local sessionKey="${BW_SESSION}"
-
-		# set BW_SESSION env var from gpg if necessary
-		if [[ -z "${sessionKey}" ]]; then
-			export BW_SESSION="$(
-				( decode | wrapArmor | decrypt $V ) <<-EOF
-					$(
-						cat <$( gpgGetFilePath $V | decode | decrypt $V )
-					)$(
-						gpgGetSession $V
-					)$(
-						bitAgentGetSession
-					)
-				EOF
-			)"
-
-			[[ ${argDebug} == true ]] && outputDebugInfo
-		fi
-
-		if hash bwfzf-autolock 2>/dev/null; then
-			bwfzf-autolock "$@"
-		elif hash bwfzf 2>/dev/null; then
-			bwfzf "$@"
+	decrypt() {
+		local verbose="$1"
+		if [[ "${verbose}" == true ]]; then
+			gpg --decrypt -vv --armor
 		else
-			echo "Error: You're trying to use `bwfzf-gnupg` but the command `bwfzf` is not available. Add `source /path/to/bwfzf` to your .bashrc and try again."
+			gpg --decrypt 2>/dev/null
+		fi
+	}
+
+	part() {
+		local data="$( cat )"
+		local nthPart="$1"
+		local numParts="$2"
+		# round up -> (numer+(denom-1))/denom
+		local lenPart=$(( ( ${#data} + ( numParts - 1 ) ) / numParts ))
+		local start=$(( ( lenPart * ( nthPart - 1 ) ) + 1 ))
+		local end=$(( ( start + lenPart ) - 1 ))
+
+		cut "-c${start}-${end}" <<-EOF
+			${data}
+		EOF
+	}
+
+	outputDebugInfo() {
+		echo '┌────retrieved-file-path────┐'
+		gpgGetFilePath
+		echo '└───────────────────────────┘'
+		echo '┌─────decoded-file-path─────┐'
+		gpgGetFilePath | decode
+		echo '└───────────────────────────┘'
+		echo '┌────decrypted-file-path────┐'
+		gpgGetFilePath | decode | decrypt
+		echo '└───────────────────────────┘'
+
+		local part=1
+		local parts=2
+
+		if hash bitagent 2>/dev/null; then
+			parts=3
+			echo "┌─retrieved-session-key-${part}/${parts}─┐"
+			bitAgentGetSession
+			echo '└───────────────────────────┘'
+			part=$(( part + 1 ))
 		fi
 
-		# if $BW_SESSION has changed, update session key stored via gpg
-		if [[ ${sessionKey} != ${BW_SESSION} ]]; then
-			sessionKey=${BW_SESSION}
-			local filePath=$( mktemp )  # perms should be 600 / -rw------- (r/w only curr user)
+		echo "┌─retrieved-session-key-${part}/${parts}─┐"
+		cat <$( gpgGetFilePath | decode | decrypt )
+		echo '└───────────────────────────┘'
 
-			( encrypt $V | encode | gpgPutFilePath $V ) <<-EOF
-				${filePath}
-			EOF
+		part=$(( part + 1 ))
 
-			local encryptedSessionKey=$(
-				( encrypt $V | unwrapArmor | encode ) <<-EOF
-					${sessionKey}
-				EOF
+		echo "┌─retrieved-session-key-${part}/${parts}─┐"
+		gpgGetSession
+		echo '└───────────────────────────┘'
+
+		echo '┌─full-decoded-session-key──┐'
+		decode <<-EOF
+			$(
+				cat <$( gpgGetFilePath | decode | decrypt )
+			)$(
+				gpgGetSession
+			)$(
+				bitAgentGetSession
 			)
+		EOF
+		echo '└───────────────────────────┘'
 
-			local numParts=2
+		echo '┌─full-wrapped-session-key──┐'
+		( decode | wrapArmor ) <<-EOF
+			$(
+				<$( gpgGetFilePath | decode | decrypt )
+			)$(
+				gpgGetSession
+			)$(
+				bitAgentGetSession
+			)
+		EOF
+		echo '└───────────────────────────┘'
 
-			# if bitagent is available, store last 3rd of session key there
-			if hash bitagent 2>/dev/null; then
-				numParts=3
-				( part 3 ${numParts} | bitAgentPutSession ) <<-EOF
-					${encryptedSessionKey}
-				EOF
-			fi
+		echo '┌─full-decrypted-session-key┐'
+		( decode | wrapArmor | decrypt ) <<-EOF
+			$(
+				<$( gpgGetFilePath | decode | decrypt )
+			)$(
+				gpgGetSession
+			)$(
+				bitAgentGetSession
+			)
+		EOF
+		echo '└───────────────────────────┘'
+	}
 
-			( part 1 ${numParts} > "${filePath}" ) <<-EOF
+	# ensure no user-set GPG_TTY interferes with gpg/pinentry interaction below; restore at end of function
+	local originalGpgTty="${GPG_TTY}"
+	export GPG_TTY=""
+
+	if [[ "${argAction}" == "get" ]]; then
+		( decode | wrapArmor | decrypt $V ) <<-EOF
+			$(
+				<$( gpgGetFilePath $V | decode | decrypt $V )
+			)$(
+				gpgGetSession $V
+			)$(
+				bitAgentGetSession
+	  	)
+		EOF
+
+	elif [[ "${argAction}" == "put" ]]; then
+		local sessionKey=$( cat )   # take session key from stdin
+		local filePath=$( mktemp )  # perms should be 600 / -rw------- (r/w only curr user)
+
+		( encrypt $V | encode | gpgPutFilePath $V ) <<-EOF
+			${filePath}
+		EOF
+
+		local encryptedSessionKey=$(
+			( encrypt $V | unwrapArmor | encode ) <<-EOF
+				${sessionKey}
+			EOF
+		)
+
+		local numParts=2
+
+		# if bitagent is available, store last 3rd of session key there
+		if hash bitagent 2>/dev/null; then
+			numParts=3
+			( part 3 ${numParts} | bitAgentPutSession ) <<-EOF
 				${encryptedSessionKey}
 			EOF
-
-			( part 2 ${numParts} | gpgPutSession $V ) <<-EOF
-				${encryptedSessionKey}
-			EOF
-
-			[[ ${argDebug} == true ]] && outputDebugInfo
 		fi
 
-		# restore gpg/pinentry env vars
-		export GPG_TTY="${originalGpgTty}"
-	)
-	else
-		echo "Error: You're trying to use `bwfzf-gnupg` but `gpg` is not installed. Try `brew install gnupg` or consult the GnuPG docs for installation instructions on your platform: https://www.gnupg.org/documentation"
+		( part 1 ${numParts} > "${filePath}" ) <<-EOF
+			${encryptedSessionKey}
+		EOF
+
+		( part 2 ${numParts} | gpgPutSession $V ) <<-EOF
+			${encryptedSessionKey}
+		EOF
 	fi
+
+	# output debug info over stderr so as not to interfere with session key output
+	[[ ${argDebug} == true ]] && outputDebugInfo >&2
+
+	# restore gpg/pinentry env vars
+	export GPG_TTY="${originalGpgTty}"
+
+	) # end subshell
 }
