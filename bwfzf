@@ -98,8 +98,14 @@ bwfzf() {
 
 		if [[ -z "${bwItems}" ]]; then
 			bwfzf  # retry
+			return
 		fi
 	fi
+
+	(  # now that we have session key, sync local bitwarden vault in background
+		export BW_SESSION="${sessionKey}" ;
+		nohup bw sync &
+	) &>/dev/null  # suppress nohup output
 
 	# invoke fzf on items list
 	local bwItem="$(
@@ -201,4 +207,10 @@ bwfzf() {
 
 "		keyPressed
 	done
+
+	echo "Synced vault at $(
+		export BW_SESSION="${sessionKey}" ;
+		bw sync --last
+	)"
+	echo
 }
