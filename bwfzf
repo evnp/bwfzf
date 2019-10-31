@@ -13,17 +13,17 @@ bwfzf-argparse() {
 		case "${arg}" in
 			"action:get") argAction="get" ; continue ;;
 			"action:put") argAction="put" ; continue ;;
-			"-v") argVerbose=true ; continue ;;
-			"-d") argDebug=true ; continue ;;
-			"-vd") argVerbose=true && argDebug=true ; continue ;;
-			"-dv") argVerbose=true && argDebug=true ; continue ;;
-			"--verbose") argVerbose=true ; continue ;;
-			"--debug") argDebug=true ; continue ;;
+			"-v")         argVerbose=true ; continue ;;
+			"-d")         argDebug=true   ; continue ;;
+			"--verbose")  argVerbose=true ; continue ;;
+			"--debug")    argDebug=true   ; continue ;;
+			"-vd")        argVerbose=true && argDebug=true ; continue ;;
+			"-dv")        argVerbose=true && argDebug=true ; continue ;;
 			"") break ;;
 		esac
 
 		echo "Error: Invalid invocation: '${arg}' is not a valid argument" >&2
-		exit 1
+		return 1
 	done
 }
 

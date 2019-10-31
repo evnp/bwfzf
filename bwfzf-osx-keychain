@@ -12,7 +12,7 @@ bwfzf-session-persistence() {
 
   if ! hash security 2>/dev/null; then
     echo "Error: You're trying to use `bwfzf-osx-keychain` but the keychain cli command `security` does not exist. Are you sure this is OSX?" >&2
-		exit 1
+		return 1
 	fi
 
 	local outputMode="-q"

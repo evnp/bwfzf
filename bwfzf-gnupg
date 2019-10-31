@@ -14,10 +14,10 @@ bwfzf-session-persistence() {
 	# ensure gpg is installed
 	if ! hash gpg 2>/dev/null; then
 		echo "Error: You're trying to use `bwfzf-gnupg` but `gpg` is not installed. Try `brew install gnupg` or consult the GnuPG docs for installation instructions on your platform: https://www.gnupg.org/documentation"
-		exit 1
+		return 1
 	fi
 
-	( # use subshell so encrypt/decrypt helper functions are not exposed globally
+	(  # use subshell so encrypt/decrypt helper functions are not exposed globally
 
 	gpgConnect() {
 		local verbose="$1"
@@ -253,19 +253,25 @@ bwfzf-session-persistence() {
 	export GPG_TTY=""
 
 	if [[ "${argAction}" == "get" ]]; then
-		( decode | wrapArmor | decrypt $V ) <<-EOF
-			$(
-				<$( gpgGetFilePath $V | decode | decrypt $V )
-			)$(
-				gpgGetSession $V
-			)$(
-				bitAgentGetSession
-	  	)
-		EOF
+		(
+			( decode | wrapArmor | decrypt $V ) <<-EOF
+				$(
+					<"$( gpgGetFilePath $V | decode | decrypt $V )"
+				)$(
+					gpgGetSession $V
+				)$(
+					bitAgentGetSession
+				)
+			EOF
+		) 2>/dev/null  # suppress "No such file or directory" error
 
 	elif [[ "${argAction}" == "put" ]]; then
-		local sessionKey=$( cat )   # take session key from stdin
-		local filePath=$( mktemp )  # perms should be 600 / -rw------- (r/w only curr user)
+		local sessionKey=$( cat )  # take session key from stdin
+		local filePath=$( mktemp )
+
+		# 600 / -rw------- / read+write current user only
+		# these should be the default permissions for a temp file, but ensure this is the case
+		chmod 600 "${filePath}"
 
 		( encrypt $V | encode | gpgPutFilePath $V ) <<-EOF
 			${filePath}
@@ -294,6 +300,10 @@ bwfzf-session-persistence() {
 		( part 2 ${numParts} | gpgPutSession $V ) <<-EOF
 			${encryptedSessionKey}
 		EOF
+
+		# 400 / -r-------- / read current user only
+		# done writing; lock down file permissions even further
+		chmod 400 "${filePath}"
 	fi
 
 	# output debug info over stderr so as not to interfere with session key output
@@ -302,5 +312,5 @@ bwfzf-session-persistence() {
 	# restore gpg/pinentry env vars
 	export GPG_TTY="${originalGpgTty}"
 
-	) # end subshell
+	)  # end subshell
 }
