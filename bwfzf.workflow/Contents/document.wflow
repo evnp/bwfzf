@@ -51,7 +51,7 @@
 				<key>ActionParameters</key>
 				<dict>
 					<key>source</key>
-					<string>on run {input, parameters}	tell application "iTerm"		if application "iTerm" is running then		    create window with default profile		else		    activate		end if		tell current session of current window			write text "bwfzf-gnupg"		end tell	end tellend run</string>
+					<string>on run {input, parameters}	tell application "iTerm"		if application "iTerm" is running then		    create window with default profile		else		    activate		end if		tell current session of current window			write text "bwfzf -q"		end tell	end tellend run</string>
 				</dict>
 				<key>BundleIdentifier</key>
 				<string>com.apple.Automator.RunScript</string>
@@ -87,9 +87,9 @@
 					<dict>
 						<key>default value</key>
 						<string>on run {input, parameters}
-	
+
 	(* Your script goes here *)
-	
+
 	return input
 end run</string>
 						<key>name</key>
