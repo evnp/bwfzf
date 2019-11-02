@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 
-bwfzf-session-persistence() {
+bwfzf-session-persistence() (
+	# use subshell so encrypt/decrypt helper functions are not exposed globally
+
 	# invoked as
 	# $ bwfzf-session-persistence action:get -v
 	# $ bwfzf-session-persistence action:put -dv
@@ -16,8 +18,6 @@ bwfzf-session-persistence() {
 		echo "Error: You're trying to use `bwfzf-gnupg` but `gpg` is not installed. Try `brew install gnupg` or consult the GnuPG docs for installation instructions on your platform: https://www.gnupg.org/documentation"
 		return 1
 	fi
-
-	(  # use subshell so encrypt/decrypt helper functions are not exposed globally
 
 	gpgConnect() {
 		local verbose="$1"
@@ -312,5 +312,4 @@ bwfzf-session-persistence() {
 	# restore gpg/pinentry env vars
 	export GPG_TTY="${originalGpgTty}"
 
-	)  # end subshell
-}
+)  # end subshell

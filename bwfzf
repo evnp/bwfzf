@@ -36,7 +36,23 @@ bwfzf-argparse() {
 # - <<-EOF syntax favored over <<< for portability,
 #   per https://stackoverflow.com/a/21171367/11776945
 
-bwfzf() {
+bwfzf() (  # use subshell so helper functions are not exposed globally
+
+	editJson() {
+		# create tmp file with .json extension so editors will handle it appropriately
+		local tempfile="$(mktemp -u).json"
+		install -m 600 /dev/null "${tempfile}"
+		cat > "${tempfile}"  # read from stdin
+		# courtesy of https://github.com/juliangruber/vipe/blob/master/vipe.sh#L52
+		${EDITOR:-vim} "${tempfile}" < /dev/tty > /dev/tty || exit $?
+		cat "${tempfile}"  # pipe through stdout
+		rm "${tempfile}"
+	}
+
+	local GREEN='\033[0;32m'
+	local NC='\033[0m' # No Color
+	local CHECKMARK="${GREEN}✓${NC}"
+
 	# parse optional args
 	local argQuit=false
 	local argVerbose=false
@@ -143,9 +159,9 @@ bwfzf() {
 						( sleep "${keyPressed}" ; $(
 							export BW_SESSION="${sessionKey}" ;
 							bw get username "${bwItemId}" | secure-pbcopy
-						) ; echo "Username copied!" >&3 ) & disown
+						) ; echo -e "Username copied ${CHECKMARK}" >&3 ) & disown
 					) 1>/dev/null  # suppress disown stdout
-				) 3>&1  # redirect file-descriptor 3 through stdout for "copied!" message
+				) 3>&1  # redirect file-descriptor 3 through stdout for "copied" message
 				nextField="password"
 			else
 				(
@@ -153,28 +169,49 @@ bwfzf() {
 						( sleep "${keyPressed}" ; $(
 							export BW_SESSION="${sessionKey}" ;
 							bw get password "${bwItemId}" | secure-pbcopy
-						) ; echo "Password copied!" >&3 ) & disown
+						) ; echo -e "Password copied ${CHECKMARK}" >&3 ) & disown
 					) 1>/dev/null  # suppress disown stdout
-				) 3>&1  # redirect file-descriptor 3 through stdout for "copied!" message
+				) 3>&1  # redirect file-descriptor 3 through stdout for "copied" message
 				nextField="username"
 			fi
 
 		# o key - open uri in browser
 		elif [[ "${keyPressed}" == "o" ]]; then
-			lastAction="URI opened!"
+			lastAction="URI opened ${CHECKMARK}"
 			open -n "$( export BW_SESSION="${sessionKey}" ; bw get uri "${bwItemId}" )"
 
 		# p key - print full entry
 		elif [[ "${keyPressed}" == "p" ]]; then
+			# print the full entry with password fields redacted
 			echo "$(
 				export BW_SESSION="${sessionKey}" ;
 				bw get item "${bwItemId}" | jq 'del(.login.password)'
 			)" | jq .
 			echo
 
+		# e key - edit full entry
+		elif [[ "${keyPressed}" == "e" ]]; then
+			# edit the entry with password fields redacted
+			# full entry (password unredacted) needs to be merged in before sending to `bw edit`,
+			# otherwise password field will be deleted
+			(
+				export BW_SESSION="${sessionKey}" ;
+				jq -s '.[0] * .[1]' <(
+					bw get item "${bwItemId}"
+				) <(
+					bw get item "${bwItemId}" | jq 'del(.login.password)'| editJson
+				) | bw encode | bw edit item "${bwItemId}"
+			) >/dev/null  # suppress bw edit output (contains password)
+			echo -e "Entry saved ${CHECKMARK}"
+			echo
+
 		# l key - lock vault & exit
 		elif [[ "${keyPressed}" == "l" ]]; then
-			echo "" | secure-pbcopy  # clear clipboard
+			(
+				( sleep "${BWFZF_CLIPBOARD_EXPIRE_SEC:-10}" ;
+					echo "" | secure-pbcopy  # clear clipboard in N seconds (default 10)
+				) & disown
+			) 1>/dev/null  # suppress disown stdout
 			bw lock
 			break
 
@@ -185,41 +222,44 @@ bwfzf() {
 					export BW_SESSION="${sessionKey}" ;
 					bw get username "${bwItemId}" | secure-pbcopy
 				)
-				lastAction="Username copied!"
+				lastAction="Username copied ${CHECKMARK}"
 				nextField="password"
 			else
 				$(
 					export BW_SESSION="${sessionKey}" ;
 					bw get password "${bwItemId}" | secure-pbcopy
 				)
-				lastAction="Password copied!"
+				lastAction="Password copied ${CHECKMARK}"
 				nextField="username"
 			fi
 
 		# any other key - exit
 		else
-			echo "" | secure-pbcopy  # clear clipboard
+			(
+				( sleep "${BWFZF_CLIPBOARD_EXPIRE_SEC:-10}" ;
+					echo "" | secure-pbcopy  # clear clipboard in N seconds (default 10)
+				) & disown
+			) 1>/dev/null  # suppress disown stdout
 			break
 		fi
 
-		read -rsn1 -p "${lastAction}
+printf "${lastAction}"
+		read -rsn1 -p "
+
   enter -> copy ${nextField}
   0 - 9 -> copy ${nextField} in N seconds
   o key -> open in browser
   p key -> print full entry (password redacted)
+  e key -> edit entry (password redacted)
+  x key -> change entry password
   l key -> lock vault & exit
   other -> exit
 
 "		keyPressed
 	done
 
-	echo "Synced vault at $(
-		export BW_SESSION="${sessionKey}" ;
-		bw sync --last
-	)"
-	echo
-
 	if [[ "${argQuit}" == true ]]; then
 		exit 0  # close terminal window
 	fi
-}
+
+)  # end subshell
