@@ -38,16 +38,15 @@ bwfzf-argparse() {
 
 bwfzf() (  # use subshell so helper functions are not exposed globally
 
-	editJson() {
-		# create tmp file with .json extension so editors will handle it appropriately
-		local tempfile="$(mktemp -u).json"
-		install -m 600 /dev/null "${tempfile}"
-		cat > "${tempfile}"  # read from stdin
-		# courtesy of https://github.com/juliangruber/vipe/blob/master/vipe.sh#L52
-		${EDITOR:-vim} "${tempfile}" < /dev/tty > /dev/tty || exit $?
-		cat "${tempfile}"  # pipe through stdout
-		rm "${tempfile}"
-	}
+	# ensure dependencies are installed
+	if ! hash bw 2>/dev/null; then
+		echo "Error: You need to install the BitWarden CLI tool. Please see https://github.com/bitwarden/cli#downloadinstall for instructions."
+		return 1
+	fi
+	if ! hash jq 2>/dev/null; then
+		echo "Error: You need to install `jq` for JSON processing. Please see https://stedolan.github.io/jq/download/ for instructions."
+		return 1
+	fi
 
 	local GREEN='\033[0;32m'
 	local NC='\033[0m' # No Color
@@ -146,6 +145,18 @@ bwfzf() (  # use subshell so helper functions are not exposed globally
 	local lastAction
 	local nextField
 
+	edit() {
+		local suffix="$1"
+		# create tmp file with .json/.yaml extension so editors will handle it appropriately
+		local tempfile="$(mktemp -u)${suffix}"
+		install -m 600 /dev/null "${tempfile}"
+		cat > "${tempfile}"  # read from stdin
+		# credit to vipe - https://github.com/juliangruber/vipe/blob/master/vipe.sh
+		${EDITOR:-vim} "${tempfile}" < /dev/tty > /dev/tty || exit $?
+		cat "${tempfile}"  # pipe through stdout
+		rm "${tempfile}"
+	}
+
 	# perform an action (e.g. copy password to clipboard) then ask the user
 	# whether to perform another action or exit
 	while true; do
@@ -182,26 +193,51 @@ bwfzf() (  # use subshell so helper functions are not exposed globally
 
 		# p key - print full entry
 		elif [[ "${keyPressed}" == "p" ]]; then
-			# print the full entry with password fields redacted
-			echo "$(
-				export BW_SESSION="${sessionKey}" ;
-				bw get item "${bwItemId}" | jq 'del(.login.password)'
-			)" | jq .
-			echo
+			# use yq if possible
+			if hash yq 2>/dev/null; then
+				# print the full entry with password fields redacted
+				(
+					export BW_SESSION="${sessionKey}" ;
+					bw get item "${bwItemId}" | yq d - 'login.password' | yq d - 'passwordHistory.[*].password'
+				)
+				echo
+			else
+				# print the full entry with password fields redacted
+				(
+					export BW_SESSION="${sessionKey}" ;
+					bw get item "${bwItemId}" | jq 'del(.. | .password?)' | jq .
+				)
+				echo
+			fi
 
 		# e key - edit full entry
 		elif [[ "${keyPressed}" == "e" ]]; then
-			# edit the entry with password fields redacted
-			# full entry (password unredacted) needs to be merged in before sending to `bw edit`,
-			# otherwise password field will be deleted
-			(
-				export BW_SESSION="${sessionKey}" ;
-				jq -s '.[0] * .[1]' <(
-					bw get item "${bwItemId}"
-				) <(
-					bw get item "${bwItemId}" | jq 'del(.login.password)'| editJson
-				) | bw encode | bw edit item "${bwItemId}"
-			) >/dev/null  # suppress bw edit output (contains password)
+			# use yq if possible
+			if hash yq 2>/dev/null; then
+				# edit the entry with password fields redacted
+				# full entry (password unredacted) needs to be merged in before sending to `bw edit`,
+				# otherwise password field will be deleted
+				(
+					export BW_SESSION="${sessionKey}" ;
+					yq m <(
+						bw get item "${bwItemId}" | yq d - 'login.password' | yq d - 'passwordHistory.[*].password' | edit .yaml
+					) <(
+						bw get item "${bwItemId}"
+				  ) | yq r -j - | bw encode | bw edit item "${bwItemId}"
+				) >/dev/null  # suppress bw edit output (contains password)
+			else
+				# edit the entry with password fields redacted
+				# full entry (password unredacted) needs to be merged in before sending to `bw edit`,
+				# otherwise password field will be deleted
+				(
+					export BW_SESSION="${sessionKey}" ;
+					jq -s '.[0] * .[1]' <(
+						bw get item "${bwItemId}"
+					) <(
+					  bw get item "${bwItemId}" | jq 'del(.. | .password?)' | edit .json
+					) | bw encode | bw edit item "${bwItemId}"
+				) >/dev/null  # suppress bw edit output (contains password)
+			fi
 			echo -e "Entry saved ${CHECKMARK}"
 			echo
 
