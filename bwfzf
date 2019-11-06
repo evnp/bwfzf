@@ -141,6 +141,10 @@ bwfzf() (  # use subshell so helper functions are not exposed globally
 	local lastAction
 	local nextField
 
+	# for password change operation
+	local pass1
+	local pass2
+
 	local GREEN='\033[0;32m'
 	local BLUE='\033[0;34m'
 	local RESET='\033[0m'
@@ -260,6 +264,38 @@ bwfzf() (  # use subshell so helper functions are not exposed globally
 			fi
 			echo -e "Entry saved ${CHECKMARK}"
 			echo
+			echo "Syncing vault..."
+			( export BW_SESSION="${sessionKey}" ; bw sync )
+			echo
+
+		# c key - change password
+		elif [[ "${keyPressed}" == "c" ]]; then
+			echo "Enter a new password:"
+			read -s pass1
+			echo "Enter the same password again:"
+			read -s pass2
+			if [[ "${pass1}" == "${pass2}" ]]; then
+				(
+					export BW_SESSION="${sessionKey}" ;
+					jq -s '.[0] * .[1]' <(
+						bw get item "${bwItemId}"
+					) <( cat <<-EOF
+							{"login": {"password": "${pass1}"}}
+						EOF
+					) |
+						bw encode |
+						bw edit item "${bwItemId}"
+				) >/dev/null  # suppress bw edit output (contains password)
+				echo
+				echo -e "Password saved ${CHECKMARK}"
+				echo
+				echo "Syncing vault..."
+				( export BW_SESSION="${sessionKey}" ; bw sync )
+				echo
+			else
+				echo "Passwords didn't match. Please try again."
+				continue
+			fi
 
 		# l key - lock vault & exit
 		elif [[ "${keyPressed}" == "l" ]]; then
@@ -307,7 +343,7 @@ printf "${lastAction}"
   o key -> open in browser
   p key -> print full entry (password redacted)
   e key -> edit entry (password redacted)
-  x key -> change entry password
+  c key -> change entry password
   l key -> lock vault & exit
   other -> exit
 
