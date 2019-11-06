@@ -48,10 +48,6 @@ bwfzf() (  # use subshell so helper functions are not exposed globally
 		return 1
 	fi
 
-	local GREEN='\033[0;32m'
-	local NC='\033[0m' # No Color
-	local CHECKMARK="${GREEN}✓${NC}"
-
 	# parse optional args
 	local argQuit=false
 	local argVerbose=false
@@ -145,6 +141,11 @@ bwfzf() (  # use subshell so helper functions are not exposed globally
 	local lastAction
 	local nextField
 
+	local GREEN='\033[0;32m'
+	local BLUE='\033[0;34m'
+	local RESET='\033[0m'
+	local CHECKMARK="${GREEN}✓${RESET}"
+
 	edit() {
 		local suffix="$1"
 		# create tmp file with .json/.yaml extension so editors will handle it appropriately
@@ -155,6 +156,10 @@ bwfzf() (  # use subshell so helper functions are not exposed globally
 		${EDITOR:-vim} "${tempfile}" < /dev/tty > /dev/tty || exit $?
 		cat "${tempfile}"  # pipe through stdout
 		rm "${tempfile}"
+	}
+
+	colorizeYaml() {
+		sed -E "s/^( *)(- )?([^:]+:)?(.*)/\1\2\\${BLUE}\3\\${RESET}\\${GREEN}\4\\${RESET}/"
 	}
 
 	# perform an action (e.g. copy password to clipboard) then ask the user
@@ -196,16 +201,21 @@ bwfzf() (  # use subshell so helper functions are not exposed globally
 			# use yq if possible
 			if hash yq 2>/dev/null; then
 				# print the full entry with password fields redacted
-				(
+				echo -e "$(
 					export BW_SESSION="${sessionKey}" ;
-					bw get item "${bwItemId}" | yq d - 'login.password' | yq d - 'passwordHistory.[*].password'
-				)
+					bw get item "${bwItemId}" |
+						yq d - 'login.password' |
+						yq d - 'passwordHistory.[*].password' |
+						colorizeYaml
+				)"
 				echo
 			else
 				# print the full entry with password fields redacted
 				(
 					export BW_SESSION="${sessionKey}" ;
-					bw get item "${bwItemId}" | jq 'del(.. | .password?)' | jq .
+					bw get item "${bwItemId}" |
+						jq 'del(.. | .password?)' |
+						jq .
 				)
 				echo
 			fi
@@ -220,10 +230,16 @@ bwfzf() (  # use subshell so helper functions are not exposed globally
 				(
 					export BW_SESSION="${sessionKey}" ;
 					yq m <(
-						bw get item "${bwItemId}" | yq d - 'login.password' | yq d - 'passwordHistory.[*].password' | edit .yaml
+						bw get item "${bwItemId}" |
+							yq d - 'login.password' |
+							yq d - 'passwordHistory.[*].password' |
+							edit .yaml
 					) <(
 						bw get item "${bwItemId}"
-				  ) | yq r -j - | bw encode | bw edit item "${bwItemId}"
+				  ) |
+						yq r -j - |
+						bw encode |
+						bw edit item "${bwItemId}"
 				) >/dev/null  # suppress bw edit output (contains password)
 			else
 				# edit the entry with password fields redacted
@@ -234,8 +250,12 @@ bwfzf() (  # use subshell so helper functions are not exposed globally
 					jq -s '.[0] * .[1]' <(
 						bw get item "${bwItemId}"
 					) <(
-					  bw get item "${bwItemId}" | jq 'del(.. | .password?)' | edit .json
-					) | bw encode | bw edit item "${bwItemId}"
+					  bw get item "${bwItemId}" |
+							jq 'del(.. | .password?)' |
+							edit .json
+					) |
+						bw encode |
+						bw edit item "${bwItemId}"
 				) >/dev/null  # suppress bw edit output (contains password)
 			fi
 			echo -e "Entry saved ${CHECKMARK}"
