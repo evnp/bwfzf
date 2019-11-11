@@ -141,9 +141,18 @@ bwfzf() (  # use subshell so helper functions are not exposed globally
 	local lastAction
 	local nextField
 
-	# for password change operation
+	# for password change operations
 	local pass1
 	local pass2
+	local genPassInput  # temp var to hold gen input data
+	local genPassFlags  # temp var to hold flag input data
+	local genPassLength=16
+	local genPassLowercase="--lowercase"
+	local genPassUppercase="--uppercase"
+	local genPassNumeric="--number"
+	local genPassSpecial=""
+	# construct args for initial default display
+	local genPassArgs="--length ${genPassLength} ${genPassLowercase} ${genPassUppercase} ${genPassNumeric} ${genPassSpecial}"
 
 	local GREEN='\033[0;32m'
 	local BLUE='\033[0;34m'
@@ -297,6 +306,82 @@ bwfzf() (  # use subshell so helper functions are not exposed globally
 				continue
 			fi
 
+		# g key - generate password
+		elif [[ "${keyPressed}" == "g" ]]; then
+			echo "Enter password length below."
+			echo "Control password parameters by including characters:"
+			echo "  l : include lowercase chars  L : exclude lowercase chars"
+			echo "  u : include uppercase chars  U : exclude uppercase chars"
+			echo "  n : include numeric chars    N : exclude numeric chars"
+			echo "  s : include special chars    S : exclude special chars"
+			echo "default: ${genPassArgs}"
+			read genPassInput
+
+			# parse and validate password gen flags
+			genPassFlags="$( sed 's/[0-9]//g' <<-EOF
+					${genPassInput}
+				EOF
+			)"
+			if [[ "${genPassFlags}" =~ l ]]; then
+				genPassLowercase="--lowercase"
+			fi
+			if [[ "${genPassFlags}" =~ L ]]; then
+				genPassLowercase=""
+			fi
+			if [[ "${genPassFlags}" =~ u ]]; then
+				genPassUppercase="--uppercase"
+			fi
+			if [[ "${genPassFlags}" =~ U ]]; then
+				genPassUppercase=""
+			fi
+			if [[ "${genPassFlags}" =~ n ]]; then
+				genPassNumeric="--number"
+			fi
+			if [[ "${genPassFlags}" =~ N ]]; then
+				genPassNumeric=""
+			fi
+			if [[ "${genPassFlags}" =~ s ]]; then
+				genPassSpecial="--special"
+			fi
+			if [[ "${genPassFlags}" =~ S ]]; then
+				genPassSpecial=""
+			fi
+
+			# parse and validate password gen length
+			genPassInput="$( sed 's/[^0-9]//g' <<-EOF
+					${genPassInput}
+				EOF
+			)"
+			if [[ -n "${genPassInput}" ]]; then
+				if (( genPassInput > 4 )); then
+					genPassLength="${genPassInput}"
+				else
+					echo "Password length is too short. Please try again."
+					continue
+				fi
+			fi
+
+			# construct args
+			genPassArgs="--length ${genPassLength} ${genPassLowercase} ${genPassUppercase} ${genPassNumeric} ${genPassSpecial}"
+
+			(
+				export BW_SESSION="${sessionKey}" ;
+				jq -s '.[0] * .[1]' <(
+					bw get item "${bwItemId}"
+				) <( cat <<-EOF
+						{"login": {"password": "$( bw generate ${genPassArgs} )"}}
+					EOF
+				) |
+					bw encode |
+					bw edit item "${bwItemId}"
+			) >/dev/null  # suppress bw edit output (contains password)
+			echo
+			echo -e "Password saved ${CHECKMARK}"
+			echo
+			echo "Syncing vault..."
+			( export BW_SESSION="${sessionKey}" ; bw sync )
+			echo
+
 		# l key - lock vault & exit
 		elif [[ "${keyPressed}" == "l" ]]; then
 			(
@@ -335,19 +420,19 @@ bwfzf() (  # use subshell so helper functions are not exposed globally
 			break
 		fi
 
-printf "${lastAction}"
-		read -rsn1 -p "
-
-  enter -> copy ${nextField}
-  0 - 9 -> copy ${nextField} in N seconds
-  o key -> open in browser
-  p key -> print full entry (password redacted)
-  e key -> edit entry (password redacted)
-  c key -> change entry password
-  l key -> lock vault & exit
-  other -> exit
-
-"		keyPressed
+		printf "${lastAction}"
+		echo
+    echo "  enter -> copy ${nextField}"
+    echo "  0 - 9 -> copy ${nextField} in N seconds"
+    echo "  o key -> open in browser"
+    echo "  p key -> print full entry (password redacted)"
+    echo "  e key -> edit entry (password redacted)"
+    echo "  c key -> change entry password"
+    echo "  g key -> generate new password"
+    echo "  l key -> lock vault & exit"
+    echo "  other -> exit"
+		echo
+		read -rsn1 keyPressed
 	done
 
 	if [[ "${argQuit}" == true ]]; then
